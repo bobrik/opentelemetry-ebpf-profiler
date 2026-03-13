@@ -6,6 +6,7 @@ package ebpf // import "go.opentelemetry.io/ebpf-profiler/processmanager/ebpf"
 import (
 	"context"
 	"errors"
+	"fmt"
 	"unsafe"
 
 	cebpf "github.com/cilium/ebpf"
@@ -116,7 +117,15 @@ WorkerLoop:
 		}
 
 		if err != nil {
-			log.Warnf("Outer map update failure: %v", err)
+			outer := "<nil>"
+			if update.Outer != nil {
+				outer = fmt.Sprintf("%#v", *update.Outer)
+			}
+			inner := "<nil>"
+			if update.Inner != nil {
+				inner = fmt.Sprintf("%#v", *update.Inner)
+			}
+			panic(fmt.Sprintf("Outer map update failure: %v | fileID = %s, outer = %v, inner = %v", err, update.FileID.StringNoQuotes(), outer, inner))
 		}
 	}
 
