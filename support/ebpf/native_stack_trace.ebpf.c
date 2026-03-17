@@ -97,8 +97,6 @@ struct stack_delta_page_to_info_t {
 } stack_delta_page_to_info SEC(".maps");
 
 // Per-CPU scratch buffer for bpf_get_stack() in push_kernel_frames().
-// Stored in a separate map so the verifier can tightly bound accesses
-// to the buffer without being affected by compiler loop unrolling.
 struct kernel_stack_scratch {
   __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
   __type(key, u32);

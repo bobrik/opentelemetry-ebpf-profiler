@@ -381,6 +381,9 @@ static inline EBPF_INLINE void push_kernel_frames(void *ctx, Trace *trace)
     return;
   }
   int nframes = bytes / sizeof(u64);
+  if (nframes > MAX_KERNEL_FRAMES) {
+    nframes = MAX_KERNEL_FRAMES;
+  }
 
   // Clamp frame_data_len so the verifier can prove all writes are in bounds.
   const int max_slots = sizeof trace->frame_data / sizeof trace->frame_data[0];
@@ -391,10 +394,7 @@ static inline EBPF_INLINE void push_kernel_frames(void *ctx, Trace *trace)
   int pos = trace->frame_data_len;
 
   u64 header = frame_header(FRAME_MARKER_KERNEL, 0, 2, 0);
-  for (int i = 0; i < MAX_KERNEL_FRAMES; i++) {
-    if (i >= nframes) {
-      break;
-    }
+  for (int i = 0; i < nframes; i++) {
     trace->frame_data[pos]     = header;
     trace->frame_data[pos + 1] = *(volatile u64 *)&buf[i];
     pos += 2;
