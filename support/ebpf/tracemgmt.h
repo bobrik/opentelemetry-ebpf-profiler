@@ -365,15 +365,18 @@ static inline EBPF_INLINE void push_abort(Trace *trace, ErrorCode error)
 // each frame into frame_data as a FRAME_MARKER_KERNEL entry.
 // Each kernel frame occupies 2 u64s in frame_data: a header and the address.
 //
-// bpf_get_stack() writes into the per-CPU scratch buffer (not frame_data)
-// to avoid clobbering frame_data with zeroed trailing bytes. The captured
-// addresses are then interleaved with headers into frame_data.
-static inline EBPF_INLINE void push_kernel_frames(void *ctx,
-                                                   PerCPURecord *record)
+// bpf_get_stack() writes into a separate per-CPU array map to avoid both
+// clobbering frame_data with zeroed trailing bytes and BPF verifier issues
+// with variable-offset reads from the BPF stack or PerCPURecord fields.
+static inline EBPF_INLINE void push_kernel_frames(void *ctx, Trace *trace)
 {
-  Trace *trace = &record->trace;
-  long bytes = bpf_get_stack(ctx, record->kernelStackBuf,
-                             sizeof(record->kernelStackBuf), 0);
+  u32 key = 0;
+  u64 *buf = bpf_map_lookup_elem(&kernel_stack_scratch, &key);
+  if (!buf) {
+    return;
+  }
+
+  long bytes = bpf_get_stack(ctx, buf, MAX_KERNEL_FRAMES * sizeof(u64), 0);
   if (bytes <= 0) {
     return;
   }
@@ -393,7 +396,7 @@ static inline EBPF_INLINE void push_kernel_frames(void *ctx,
       break;
     }
     trace->frame_data[pos]     = header;
-    trace->frame_data[pos + 1] = record->kernelStackBuf[i];
+    trace->frame_data[pos + 1] = *(volatile u64 *)&buf[i];
     pos += 2;
   }
   trace->frame_data_len = pos;
@@ -769,7 +772,7 @@ static inline EBPF_INLINE int collect_trace(
   }
 
   // Capture kernel stack and push each frame into frame_data.
-  push_kernel_frames(ctx, record);
+  push_kernel_frames(ctx, trace);
 
   if (pid == 0) {
     tail_call(ctx, PROG_UNWIND_STOP);

@@ -826,13 +826,6 @@ typedef struct PerCPURecord {
 
   // ratelimitAction determines the PID event rate limiting mode
   u8 ratelimitAction;
-
-  // Scratch buffer for bpf_get_stack() in push_kernel_frames().
-  // Stored here rather than on the BPF stack because the verifier
-  // does not allow variable-offset reads from the stack.
-  // Extra slots are reserved so the compiler's unrolled reads
-  // don't exceed the map value boundary.
-  u64 kernelStackBuf[MAX_KERNEL_FRAMES + 2];
 } PerCPURecord;
 
 // https://github.com/torvalds/linux/blob/e9a6fb0bcdd7609be6969112f3fbfcce3b1d4a7c/include/linux/percpu.h#L24C39-L24C47

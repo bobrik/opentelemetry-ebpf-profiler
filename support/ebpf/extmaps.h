@@ -14,6 +14,7 @@ extern struct pid_events_t pid_events;
 extern struct inhibit_events_t inhibit_events;
 extern struct interpreter_offsets_t interpreter_offsets;
 extern struct trace_events_t trace_events;
+extern struct kernel_stack_scratch kernel_stack_scratch;
 extern struct go_labels_procs_t go_labels_procs;
 
 #if defined(TESTING_COREDUMP)

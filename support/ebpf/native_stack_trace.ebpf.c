@@ -96,6 +96,16 @@ struct stack_delta_page_to_info_t {
   __uint(max_entries, 40000);
 } stack_delta_page_to_info SEC(".maps");
 
+// Per-CPU scratch buffer for bpf_get_stack() in push_kernel_frames().
+// Stored in a separate map so the verifier can tightly bound accesses
+// to the buffer without being affected by compiler loop unrolling.
+struct kernel_stack_scratch {
+  __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+  __type(key, u32);
+  __type(value, u64[MAX_KERNEL_FRAMES]);
+  __uint(max_entries, 1);
+} kernel_stack_scratch SEC(".maps");
+
 // Record a native frame
 static EBPF_INLINE ErrorCode
 push_native(UnwindState *state, Trace *trace, u64 file, u64 line, bool return_address)
