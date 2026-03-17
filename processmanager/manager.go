@@ -18,6 +18,7 @@ import (
 	"go.opentelemetry.io/ebpf-profiler/host"
 	"go.opentelemetry.io/ebpf-profiler/interpreter"
 	"go.opentelemetry.io/ebpf-profiler/interpreter/apmint"
+	"go.opentelemetry.io/ebpf-profiler/kallsyms"
 	"go.opentelemetry.io/ebpf-profiler/libpf"
 	"go.opentelemetry.io/ebpf-profiler/libpf/pfunsafe"
 	"go.opentelemetry.io/ebpf-profiler/lpm"
@@ -62,6 +63,7 @@ var (
 func New(ctx context.Context, includeTracers types.IncludedTracers, monitorInterval time.Duration,
 	executableUnloadDelay time.Duration, ebpf pmebpf.EbpfHandler, traceReporter reporter.TraceReporter,
 	exeReporter reporter.ExecutableReporter, sdp nativeunwind.StackDeltaProvider,
+	kernelSymbolizer *kallsyms.Symbolizer,
 	filterErrorFrames bool, includeEnvVars libpf.Set[string]) (*ProcessManager, error) {
 	if exeReporter == nil {
 		exeReporter = executableReporterStub{}
@@ -103,6 +105,7 @@ func New(ctx context.Context, includeTracers types.IncludedTracers, monitorInter
 		ebpf:                     ebpf,
 		elfInfoCache:             elfInfoCache,
 		frameCache:               frameCache,
+		kernelSymbolizer:         kernelSymbolizer,
 		traceReporter:            traceReporter,
 		exeReporter:              exeReporter,
 		metricsAddSlice:          metrics.AddSlice,
@@ -215,9 +218,25 @@ func (pm *ProcessManager) symbolizeFrame(pid libpf.PID, data []uint64, frames *l
 // if non-trivial cacheable conversion was done.
 func (pm *ProcessManager) convertFrame(pid libpf.PID, ef libpf.EbpfFrame, dst *libpf.Frames) bool {
 	switch ef.Type().Interpreter() {
-	case libpf.UnknownInterp, libpf.Kernel:
+	case libpf.UnknownInterp:
 		log.Errorf("Unexpected frame type 0x%02X (neither error nor usermode frame)",
 			uint8(ef.Type()))
+	case libpf.Kernel:
+		address := libpf.Address(ef.Variable(0))
+		frame := libpf.Frame{
+			Type:            libpf.KernelFrame,
+			AddressOrLineno: libpf.AddressOrLineno(address - 1),
+		}
+		if pm.kernelSymbolizer != nil {
+			if kmod, err := pm.kernelSymbolizer.GetModuleByAddress(address); err == nil {
+				frame.Mapping = kmod.Mapping()
+				frame.AddressOrLineno -= libpf.AddressOrLineno(kmod.Start())
+				if funcName, _, err := kmod.LookupSymbolByAddress(address); err == nil {
+					frame.FunctionName = libpf.Intern(funcName)
+				}
+			}
+		}
+		dst.Append(&frame)
 	case libpf.Native:
 		fileID := host.FileID(ef.Variable(0))
 		address := libpf.Address(ef.Data())
@@ -322,12 +341,10 @@ func (pm *ProcessManager) HandleTrace(bpfTrace *libpf.EbpfTrace) {
 	}
 
 	pid := bpfTrace.PID
-	kernelFramesLen := len(bpfTrace.KernelFrames)
 	trace := &libpf.Trace{
-		Frames:       make(libpf.Frames, kernelFramesLen, kernelFramesLen+bpfTrace.NumFrames),
+		Frames:       make(libpf.Frames, 0, bpfTrace.NumFrames),
 		CustomLabels: bpfTrace.CustomLabels,
 	}
-	copy(trace.Frames, bpfTrace.KernelFrames)
 
 	cacheMiss := uint64(0)
 	cacheHit := uint64(0)

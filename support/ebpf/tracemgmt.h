@@ -236,12 +236,11 @@ static inline EBPF_INLINE PerCPURecord *get_pristine_per_cpu_record()
   record->ratelimitAction                   = RATELIMIT_ACTION_DEFAULT;
   record->customLabelsState.go_m_ptr        = NULL;
 
-  Trace *trace           = &record->trace;
-  trace->kernel_stack_id = -1;
-  trace->frame_data_len  = 0;
-  trace->num_frames      = 0;
-  trace->pid             = 0;
-  trace->tid             = 0;
+  Trace *trace          = &record->trace;
+  trace->frame_data_len = 0;
+  trace->num_frames     = 0;
+  trace->pid            = 0;
+  trace->tid            = 0;
 
   trace->apm_trace_id.as_int.hi    = 0;
   trace->apm_trace_id.as_int.lo    = 0;
@@ -360,6 +359,41 @@ static inline EBPF_INLINE void push_abort(Trace *trace, ErrorCode error)
     trace->num_frames++;
     trace->frame_data[trace->frame_data_len++] =
       frame_header(FRAME_MARKER_UNKNOWN, FRAME_FLAG_ERROR, 1, error);
+  }
+}
+
+// push_kernel_frames captures the kernel stack via bpf_get_stack() and pushes
+// each frame into frame_data as a FRAME_MARKER_KERNEL entry.
+// Each kernel frame occupies 2 u64s in frame_data: a header and the address.
+static inline EBPF_INLINE void push_kernel_frames(void *ctx, Trace *trace)
+{
+  u64 buf[MAX_KERNEL_FRAMES];
+  long bytes = bpf_get_stack(ctx, buf, sizeof(buf), 0);
+  if (bytes <= 0) {
+    return;
+  }
+  int nframes = bytes / sizeof(u64);
+  if (nframes > MAX_KERNEL_FRAMES) {
+    nframes = MAX_KERNEL_FRAMES;
+  }
+
+  // Each kernel frame needs 2 slots (header + address).
+  // Reserve 1 extra slot for a potential error frame appended later.
+  const int max_slots = sizeof trace->frame_data / sizeof trace->frame_data[0];
+  int available       = (max_slots - 1 - trace->frame_data_len) / 2;
+  if (available <= 0) {
+    return;
+  }
+  if (nframes > available) {
+    nframes = available;
+  }
+
+  u64 header = frame_header(FRAME_MARKER_KERNEL, 0, 2, 0);
+  for (int i = 0; i < MAX_KERNEL_FRAMES && i < nframes; i++) {
+    trace->frame_data[trace->frame_data_len]     = header;
+    trace->frame_data[trace->frame_data_len + 1] = buf[i];
+    trace->frame_data_len += 2;
+    trace->num_frames++;
   }
 }
 
@@ -731,9 +765,8 @@ static inline EBPF_INLINE int collect_trace(
     increment_metric(metricID_ErrBPFCurrentComm);
   }
 
-  // Get the kernel mode stack trace first
-  trace->kernel_stack_id = bpf_get_stackid(ctx, &kernel_stackmap, BPF_F_REUSE_STACKID);
-  DEBUG_PRINT("kernel stack id = %d", trace->kernel_stack_id);
+  // Capture kernel stack and push each frame into frame_data.
+  push_kernel_frames(ctx, trace);
 
   if (pid == 0) {
     tail_call(ctx, PROG_UNWIND_STOP);

@@ -120,7 +120,6 @@ type EbpfTrace struct {
 	NumFrames        int
 	EnvVars          map[String]String
 	CustomLabels     map[String]String
-	KernelFrames     Frames
 	FrameData        []uint64
 	FrameDataBuf     [3072]uint64
 }

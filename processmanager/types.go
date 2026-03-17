@@ -10,6 +10,7 @@ import (
 	lru "github.com/elastic/go-freelru"
 
 	"go.opentelemetry.io/ebpf-profiler/interpreter"
+	"go.opentelemetry.io/ebpf-profiler/kallsyms"
 	"go.opentelemetry.io/ebpf-profiler/libc"
 	"go.opentelemetry.io/ebpf-profiler/libpf"
 	"go.opentelemetry.io/ebpf-profiler/libpf/pfelf"
@@ -107,6 +108,9 @@ type ProcessManager struct {
 	// pidPageToMappingInfoSize reflects the current size of the eBPF hash map
 	// pid_page_to_mapping_info.
 	pidPageToMappingInfoSize uint64
+
+	// kernelSymbolizer does kernel fallback symbolization
+	kernelSymbolizer *kallsyms.Symbolizer
 
 	// filterErrorFrames determines whether error frames are dropped by `ConvertTrace`.
 	filterErrorFrames bool

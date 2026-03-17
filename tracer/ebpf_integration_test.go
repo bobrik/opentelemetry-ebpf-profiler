@@ -90,8 +90,6 @@ func runKernelFrameProbe(t *testing.T, tr *tracer.Tracer) {
 }
 
 type trace struct {
-	numKernelFrames int
-
 	frames libpf.EbpfFrame
 }
 
@@ -207,8 +205,7 @@ Loop:
 			require.GreaterOrEqual(t, len(comm), 4)
 			require.Equal(t, "\xAA\xBB\xCC", comm[0:3])
 			traces[comm[3]] = trace{
-				numKernelFrames: len(ebpfTrace.KernelFrames),
-				frames:          libpf.EbpfFrame(slices.Clone(ebpfTrace.FrameData)),
+				frames: libpf.EbpfFrame(slices.Clone(ebpfTrace.FrameData)),
 			}
 		}
 	}
@@ -242,7 +239,17 @@ Loop:
 			trace, ok := traces[testcase.id]
 			require.Truef(t, ok, "trace ID %d not received", testcase.id)
 
-			numKernelFrames := trace.numKernelFrames
+			// Count and skip kernel frames at the start of frame_data.
+			numKernelFrames := 0
+			remaining := trace.frames
+			for len(remaining) > 0 {
+				f := remaining[:remaining.Length()]
+				if f.Type() != libpf.KernelFrame {
+					break
+				}
+				numKernelFrames++
+				remaining = remaining[remaining.Length():]
+			}
 
 			assert.False(t, !testcase.hasKernelFrames && numKernelFrames > 0,
 				"unexpected kernel frames")
@@ -256,9 +263,9 @@ Loop:
 			assert.Falsef(t, testcase.hasKernelFrames && numKernelFrames < 2,
 				"expected at least 2 kernel frames, but got %d", numKernelFrames)
 
-			t.Logf("Received %d framedata and %d kernel frames",
-				len(trace.frames), numKernelFrames)
-			assert.Equal(t, testcase.userSpaceTrace, trace.frames)
+			t.Logf("Received %d kernel frames and %d userspace framedata",
+				numKernelFrames, len(remaining))
+			assert.Equal(t, testcase.userSpaceTrace, remaining)
 		})
 	}
 }
