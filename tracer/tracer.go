@@ -14,6 +14,7 @@ import (
 	"math/rand/v2"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -97,6 +98,11 @@ type Tracer struct {
 
 	// tracePool is cache of libpf.EbpfTrace to avoid GC pressure
 	tracePool sync.Pool
+
+	// Kernel stack debug counters
+	kernelStackSuccess atomic.Int64
+	kernelStackFailed  atomic.Int64
+	kernelStackInit    atomic.Int64 // stayed at -1 (never set)
 
 	// monitorPIDEventsMap iterates over the eBPF map pid_events, collects PIDs and
 	// writes them to the keys slice. The implementation is selected on creation.
@@ -1032,6 +1038,17 @@ func (t *Tracer) loadBpfTrace(raw []byte, cpu int) (*libpf.EbpfTrace, error) {
 		trace.KernelFrames, err = t.readKernelFrames(ptr.Kernel_stack_id, trace.KernelFrames)
 		if err != nil {
 			log.Errorf("Failed to get kernel stack frames: %v", err)
+		}
+		if ptr.Pid == 1651082 {
+			t.kernelStackSuccess.Add(1)
+		}
+	} else if ptr.Kernel_stack_id != -1 {
+		if ptr.Pid == 1651082 {
+			failed := t.kernelStackFailed.Add(1)
+			success := t.kernelStackSuccess.Load()
+			log.Errorf("bpf_get_stackid failed for pid %d: %d "+
+				"(success: %d, failed: %d)",
+				ptr.Pid, ptr.Kernel_stack_id, success, failed)
 		}
 	}
 
