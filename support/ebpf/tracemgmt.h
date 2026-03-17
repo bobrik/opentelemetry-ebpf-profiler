@@ -364,36 +364,45 @@ static inline EBPF_INLINE void push_abort(Trace *trace, ErrorCode error)
 // push_kernel_frames captures the kernel stack via bpf_get_stack() and pushes
 // each frame into frame_data as a FRAME_MARKER_KERNEL entry.
 // Each kernel frame occupies 2 u64s in frame_data: a header and the address.
+//
+// bpf_get_stack() writes contiguously into frame_data, then the addresses are
+// expanded in-place into (header, address) pairs by iterating backwards.
+// All reads and writes go through frame_data (a map value) to avoid the BPF
+// verifier's restriction on variable-offset stack reads.
 static inline EBPF_INLINE void push_kernel_frames(void *ctx, Trace *trace)
 {
-  u64 buf[MAX_KERNEL_FRAMES];
-  long bytes = bpf_get_stack(ctx, buf, sizeof(buf), 0);
+  // Clamp frame_data_len so the verifier can prove all accesses are in bounds.
+  // We need room for MAX_KERNEL_FRAMES addresses (written by bpf_get_stack)
+  // plus MAX_KERNEL_FRAMES headers (inserted during expansion), plus 1 slot
+  // reserved for a potential error frame appended later.
+  const int max_slots = sizeof trace->frame_data / sizeof trace->frame_data[0];
+  const int max_pos = max_slots - 1 - MAX_KERNEL_FRAMES * 2;
+  if (trace->frame_data_len > max_pos) {
+    return;
+  }
+  int pos = trace->frame_data_len;
+
+  // Write kernel addresses contiguously into frame_data.
+  long bytes = bpf_get_stack(ctx, &trace->frame_data[pos],
+                             MAX_KERNEL_FRAMES * sizeof(u64), 0);
   if (bytes <= 0) {
     return;
   }
   int nframes = bytes / sizeof(u64);
-  if (nframes > MAX_KERNEL_FRAMES) {
-    nframes = MAX_KERNEL_FRAMES;
-  }
 
-  // Each kernel frame needs 2 slots (header + address).
-  // Reserve 1 extra slot for a potential error frame appended later.
-  const int max_slots = sizeof trace->frame_data / sizeof trace->frame_data[0];
-  int available = (max_slots - 1 - trace->frame_data_len) / 2;
-  if (available <= 0) {
-    return;
-  }
-  if (nframes > available) {
-    nframes = available;
-  }
-
+  // Expand in-place backwards: move each address from position [pos+i]
+  // to [pos+i*2+1] and insert a header at [pos+i*2].
+  // Iterating backwards avoids overwriting unprocessed entries.
   u64 header = frame_header(FRAME_MARKER_KERNEL, 0, 2, 0);
-  for (int i = 0; i < MAX_KERNEL_FRAMES && i < nframes; i++) {
-    trace->frame_data[trace->frame_data_len]     = header;
-    trace->frame_data[trace->frame_data_len + 1] = buf[i];
-    trace->frame_data_len += 2;
-    trace->num_frames++;
+  for (int i = MAX_KERNEL_FRAMES - 1; i >= 0; i--) {
+    if (i >= nframes) {
+      continue;
+    }
+    trace->frame_data[pos + i * 2 + 1] = trace->frame_data[pos + i];
+    trace->frame_data[pos + i * 2]     = header;
   }
+  trace->frame_data_len = pos + nframes * 2;
+  trace->num_frames += nframes;
 }
 
 // Send a trace to user-land via the `trace_events` perf event buffer.
