@@ -395,8 +395,8 @@ static inline EBPF_INLINE void push_kernel_frames(void *ctx, Trace *trace)
 
   u64 header = frame_header(FRAME_MARKER_KERNEL, 0, 2, 0);
   for (int i = 0; i < nframes; i++) {
-    trace->frame_data[pos]     = header;
-    trace->frame_data[pos + 1] = *(volatile u64 *)&buf[i];
+    trace->frame_data[pos] = header;
+    bpf_probe_read(&trace->frame_data[pos + 1], sizeof(u64), &buf[i]);
     pos += 2;
   }
   trace->frame_data_len = pos;
