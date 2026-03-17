@@ -6,6 +6,9 @@
 #include "errors.h"
 #include "kernel.h"
 
+// Maximum number of kernel stack frames captured by push_kernel_frames().
+#define MAX_KERNEL_FRAMES 32
+
 // ID values used as index to maps/metrics array.
 // If you add enums below please update the following places too:
 //  - The actual metric knob in:
@@ -601,8 +604,6 @@ typedef struct Trace {
   ApmTraceID apm_trace_id;
   // Custom Labels
   CustomLabelsArray custom_labels;
-  // The kernel stack ID.
-  s32 kernel_stack_id;
   // The number of frame_data elements present.
   u16 frame_data_len;
   // The number of frames present.

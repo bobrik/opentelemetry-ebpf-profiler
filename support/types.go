@@ -87,10 +87,6 @@ const (
 )
 
 const (
-	PerfMaxStackDepth = 0x7f
-)
-
-const (
 	TraceOriginUnknown  = 0x0
 	TraceOriginSampling = 0x1
 	TraceOriginOffCPU   = 0x2
@@ -164,7 +160,6 @@ type Trace struct {
 	Apm_transaction_id [8]byte
 	Apm_trace_id       [16]byte
 	Custom_labels      CustomLabelsArray
-	Kernel_stack_id    int32
 	Frame_data_len     uint16
 	Num_frames         uint16
 	Origin             uint32

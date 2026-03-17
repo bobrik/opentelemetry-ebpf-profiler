@@ -107,7 +107,7 @@ hashing schemes are used for the BPF and user-mode trace representations. Multip
 **BPF trace hash (64 bit):**
 
 ```
-H(kernel_stack_id, frames_user, PID)
+H(frames_kernel, frames_user, PID)
 ```
 
 **User-land trace hash (128 bit)**
