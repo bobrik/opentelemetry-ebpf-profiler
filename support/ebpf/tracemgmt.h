@@ -400,12 +400,14 @@ static inline EBPF_INLINE void push_kernel_frames(void *ctx, Trace *trace)
 // Send a trace to user-land via the `trace_events` perf event buffer.
 static inline EBPF_INLINE void send_trace(void *ctx, Trace *trace)
 {
-  const u64 send_size = sizeof(Trace) - sizeof(trace->frame_data) +
-                        sizeof(trace->frame_data[0]) * trace->frame_data_len;
-
-  if (send_size < sizeof(Trace)) {
-    bpf_perf_event_output(ctx, &trace_events, BPF_F_CURRENT_CPU, trace, send_size);
+  u16 len = trace->frame_data_len;
+  if (len > sizeof(trace->frame_data) / sizeof(trace->frame_data[0])) {
+    len = sizeof(trace->frame_data) / sizeof(trace->frame_data[0]);
   }
+  const u64 send_size =
+    sizeof(Trace) - sizeof(trace->frame_data) + sizeof(trace->frame_data[0]) * len;
+
+  bpf_perf_event_output(ctx, &trace_events, BPF_F_CURRENT_CPU, trace, send_size);
 }
 
 // is_kernel_address checks if the given address looks like virtual address to kernel memory.
