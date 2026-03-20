@@ -106,6 +106,18 @@ WorkerLoop:
 		case update = <-w.queue:
 		}
 
+		outer := "<nil>"
+		if update.Outer != nil {
+			outer = fmt.Sprintf("%s", update.Outer)
+		}
+
+		inner := "<nil>"
+		if update.Inner != nil {
+			inner = fmt.Sprintf("%s", update.Inner)
+		}
+
+		log.Infof("async update: fileID = %s, outer = %s, inner = %s", update.FileID.StringNoQuotes(), outer, inner)
+
 		var err error
 		if update.Inner == nil {
 			err = update.Outer.Delete(unsafe.Pointer(&update.FileID))
@@ -117,15 +129,7 @@ WorkerLoop:
 		}
 
 		if err != nil {
-			outer := "<nil>"
-			if update.Outer != nil {
-				outer = fmt.Sprintf("%#v", *update.Outer)
-			}
-			inner := "<nil>"
-			if update.Inner != nil {
-				inner = fmt.Sprintf("%#v", *update.Inner)
-			}
-			panic(fmt.Sprintf("Outer map update failure: %v | fileID = %s, outer = %v, inner = %v", err, update.FileID.StringNoQuotes(), outer, inner))
+			log.Errorf("Outer map update failure: %v | fileID = %s, outer = %v, inner = %v", err, update.FileID.StringNoQuotes(), outer, inner)
 		}
 	}
 
