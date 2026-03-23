@@ -535,6 +535,10 @@ func (pm *ProcessManager) synchronizeMappings(pr process.Process,
 		}
 	}
 
+	if pid == 552123 {
+		log.Warnf("synchronizeMappings PID %d: newProcess=%v, added=%d, removed=%d, total=%d, interpreters=%d",
+			pid, newProcess, len(mpAdd), len(mpRemove), len(mappings), len(interpreters))
+	}
 	if len(mpAdd) > 0 || len(mpRemove) > 0 || len(interpreters) > 0 {
 		log.Debugf("Added %v mappings, removed %v mappings for PID %v with %d interpreters",
 			len(mpAdd), len(mpRemove), pid, len(interpreters))
@@ -595,6 +599,10 @@ func (pm *ProcessManager) SynchronizeProcess(pr process.Process) {
 	pid := pr.PID()
 	log.Debugf("= PID: %v", pid)
 
+	if pid == 552123 {
+		log.Warnf("SynchronizeProcess entry PID %d", pid)
+	}
+
 	// Abort early if process is waiting for cleanup in ProcessedUntil
 	pm.mu.Lock()
 	_, ok := pm.exitEvents[pid]
@@ -610,6 +618,11 @@ func (pm *ProcessManager) SynchronizeProcess(pr process.Process) {
 	start := time.Now()
 	mappings, numParseErrors, err := pr.GetMappings()
 	elapsed := time.Since(start)
+
+	if pid == 552123 {
+		log.Warnf("SynchronizeProcess PID %d: GetMappings took %v, got %d mappings, %d parse errors, err=%v",
+			pid, elapsed, len(mappings), numParseErrors, err)
+	}
 	pm.mappingStats.numProcParseErrors.Add(numParseErrors)
 
 	if err != nil {
@@ -650,7 +663,12 @@ func (pm *ProcessManager) SynchronizeProcess(pr process.Process) {
 	util.AtomicUpdateMaxUint32(&pm.mappingStats.maxProcParseUsec, uint32(elapsed.Microseconds()))
 	pm.mappingStats.totalProcParseUsec.Add(uint32(elapsed.Microseconds()))
 
-	if pm.synchronizeMappings(pr, mappings) {
+	newProcess := pm.synchronizeMappings(pr, mappings)
+	if pid == 552123 {
+		log.Warnf("SynchronizeProcess PID %d: synchronizeMappings returned newProcess=%v",
+			pid, newProcess)
+	}
+	if newProcess {
 		log.Debugf("+ PID: %v", pid)
 		// TODO: Fine-grained reported_pids handling (evaluate per-PID mapping
 		// synchronization based on per-PID state such as time since last
@@ -663,6 +681,9 @@ func (pm *ProcessManager) SynchronizeProcess(pr process.Process) {
 		// corner cases where processes load on startup in quick-succession
 		// additional code (e.g. plugins, Asterisk).
 		// Also see: Unified PID Events design doc
+		if pid == 552123 {
+			log.Warnf("SynchronizeProcess PID %d: calling RemoveReportedPID (new process)", pid)
+		}
 		pm.ebpf.RemoveReportedPID(pid)
 	}
 }
