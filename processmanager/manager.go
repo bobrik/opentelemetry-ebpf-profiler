@@ -108,9 +108,11 @@ func New(ctx context.Context, includeTracers types.IncludedTracers, monitorInter
 		metricsAddSlice:          metrics.AddSlice,
 		filterErrorFrames:        filterErrorFrames,
 		includeEnvVars:           includeEnvVars,
+		syncTimeByComm:           make(map[string]syncTimeEntry),
 	}
 
 	collectInterpreterMetrics(ctx, pm, monitorInterval)
+	pm.startSyncTimeReporter(ctx)
 
 	return pm, nil
 }

@@ -6,6 +6,7 @@ package processmanager // import "go.opentelemetry.io/ebpf-profiler/processmanag
 import (
 	"sync"
 	"sync/atomic"
+	"time"
 
 	lru "github.com/elastic/go-freelru"
 
@@ -113,6 +114,15 @@ type ProcessManager struct {
 
 	// includeEnvVars holds a list of env vars that should be captured from processes
 	includeEnvVars libpf.Set[string]
+
+	// syncTimeByComm tracks cumulative SynchronizeProcess time and call count per comm.
+	syncTimeByComm map[string]syncTimeEntry
+}
+
+// syncTimeEntry tracks cumulative time spent in SynchronizeProcess for a given comm.
+type syncTimeEntry struct {
+	duration time.Duration
+	count    uint64
 }
 
 // Mapping represents an executable memory mapping of a process.

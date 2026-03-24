@@ -12,12 +12,14 @@ package processmanager // import "go.opentelemetry.io/ebpf-profiler/processmanag
 // HA/tracer and tools/coredump modules only.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path"
 	"slices"
 	"sort"
+	"strings"
 	"syscall"
 	"time"
 
@@ -593,15 +595,81 @@ func (pm *ProcessManager) processPIDExit(pid libpf.PID) {
 	pm.processRemovedInterpreters(pid, libpf.Set[util.OnDiskFileIdentifier]{})
 }
 
+// startSyncTimeReporter starts a goroutine that logs the top 10 comms by
+// cumulative SynchronizeProcess time every 30 seconds.
+func (pm *ProcessManager) startSyncTimeReporter(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				pm.mu.Lock()
+				entries := make([]struct {
+					comm  string
+					entry syncTimeEntry
+				}, 0, len(pm.syncTimeByComm))
+				for comm, entry := range pm.syncTimeByComm {
+					entries = append(entries, struct {
+						comm  string
+						entry syncTimeEntry
+					}{comm, entry})
+				}
+				// Reset for next interval.
+				pm.syncTimeByComm = make(map[string]syncTimeEntry)
+				pm.mu.Unlock()
+
+				if len(entries) == 0 {
+					continue
+				}
+
+				sort.Slice(entries, func(i, j int) bool {
+					return entries[i].entry.duration > entries[j].entry.duration
+				})
+
+				n := len(entries)
+				if n > 10 {
+					n = 10
+				}
+				log.Warnf("SynchronizeProcess top %d by time (last 30s):", n)
+				for i := 0; i < n; i++ {
+					e := entries[i]
+					log.Warnf("  %s: %v (%d calls)", e.comm, e.entry.duration, e.entry.count)
+				}
+			}
+		}
+	}()
+}
+
 // SynchronizeProcess triggers ProcessManager to update its internal information
 // about a process. This includes process exit information as well as changed memory mappings.
 func (pm *ProcessManager) SynchronizeProcess(pr process.Process) {
+	syncStart := time.Now()
 	pid := pr.PID()
 	log.Debugf("= PID: %v", pid)
 
 	if pid == 552123 {
 		log.Warnf("SynchronizeProcess entry PID %d", pid)
 	}
+
+	comm := ""
+	if commBytes, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid)); err == nil {
+		comm = strings.TrimSpace(string(commBytes))
+	}
+	defer func() {
+		if comm == "" {
+			return
+		}
+		elapsed := time.Since(syncStart)
+		pm.mu.Lock()
+		entry := pm.syncTimeByComm[comm]
+		entry.duration += elapsed
+		entry.count++
+		pm.syncTimeByComm[comm] = entry
+		pm.mu.Unlock()
+	}()
 
 	// Abort early if process is waiting for cleanup in ProcessedUntil
 	pm.mu.Lock()
