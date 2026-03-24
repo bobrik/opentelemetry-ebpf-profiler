@@ -32,6 +32,10 @@ static EBPF_INLINE int do_process_free(void *ctx, u32 pid)
     goto exit;
   }
 
+  u32 in_reported = bpf_map_lookup_elem(&reported_pids, &pid) != NULL;
+  u32 in_pidinfo = pid_information_exists(pid);
+  printt("sched_process_free: pid=%d in_reported=%d in_pidinfo=%d", pid, in_reported, in_pidinfo);
+
   if (report_pid(ctx, (u64)pid << 32 | pid, RATELIMIT_ACTION_RESET)) {
     increment_metric(metricID_NumProcExit);
   }
