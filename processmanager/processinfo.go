@@ -408,7 +408,7 @@ func compareMapping(a, b Mapping) int {
 //
 // TODO: Periodic synchronization of mappings for every tracked PID.
 func (pm *ProcessManager) synchronizeMappings(pr process.Process,
-	processMappings []process.Mapping) bool {
+	processMappings []process.Mapping, comm string) bool {
 	pid := pr.PID()
 
 	// Get current executable name
@@ -537,7 +537,7 @@ func (pm *ProcessManager) synchronizeMappings(pr process.Process,
 		}
 	}
 
-	if pid == 552123 {
+	if comm == "edgeworker/sbox" {
 		log.Warnf("synchronizeMappings PID %d: newProcess=%v, added=%d, removed=%d, total=%d, interpreters=%d",
 			pid, newProcess, len(mpAdd), len(mpRemove), len(mappings), len(interpreters))
 	}
@@ -650,13 +650,13 @@ func (pm *ProcessManager) SynchronizeProcess(pr process.Process) {
 	pid := pr.PID()
 	log.Debugf("= PID: %v", pid)
 
-	if pid == 552123 {
-		log.Warnf("SynchronizeProcess entry PID %d", pid)
-	}
-
 	comm := ""
 	if commBytes, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid)); err == nil {
 		comm = strings.TrimSpace(string(commBytes))
+	}
+	debugComm := comm == "edgeworker/sbox"
+	if debugComm {
+		log.Warnf("SynchronizeProcess entry PID %d comm=%s", pid, comm)
 	}
 	defer func() {
 		if comm == "" {
@@ -687,7 +687,7 @@ func (pm *ProcessManager) SynchronizeProcess(pr process.Process) {
 	mappings, numParseErrors, err := pr.GetMappings()
 	elapsed := time.Since(start)
 
-	if pid == 552123 {
+	if debugComm {
 		log.Warnf("SynchronizeProcess PID %d: GetMappings took %v, got %d mappings, %d parse errors, err=%v",
 			pid, elapsed, len(mappings), numParseErrors, err)
 	}
@@ -731,8 +731,8 @@ func (pm *ProcessManager) SynchronizeProcess(pr process.Process) {
 	util.AtomicUpdateMaxUint32(&pm.mappingStats.maxProcParseUsec, uint32(elapsed.Microseconds()))
 	pm.mappingStats.totalProcParseUsec.Add(uint32(elapsed.Microseconds()))
 
-	newProcess := pm.synchronizeMappings(pr, mappings)
-	if pid == 552123 {
+	newProcess := pm.synchronizeMappings(pr, mappings, comm)
+	if debugComm {
 		log.Warnf("SynchronizeProcess PID %d: synchronizeMappings returned newProcess=%v",
 			pid, newProcess)
 	}
@@ -749,7 +749,7 @@ func (pm *ProcessManager) SynchronizeProcess(pr process.Process) {
 		// corner cases where processes load on startup in quick-succession
 		// additional code (e.g. plugins, Asterisk).
 		// Also see: Unified PID Events design doc
-		if pid == 552123 {
+		if debugComm {
 			log.Warnf("SynchronizeProcess PID %d: calling RemoveReportedPID (new process)", pid)
 		}
 		pm.ebpf.RemoveReportedPID(pid)
