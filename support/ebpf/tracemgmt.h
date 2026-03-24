@@ -140,6 +140,8 @@ static inline EBPF_INLINE bool pid_event_ratelimit(u32 pid, int ratelimit_action
       }
     } else {
       // Silence for at least 5 seconds. Reset back to zero.
+      printt("ratelimit_reset: pid=%d attempt=%d diff_ms=%llu",
+        pid, attempt, diff_ts / 1000000ULL);
       attempt = 0;
     }
   }
