@@ -108,7 +108,7 @@ static inline EBPF_INLINE bool pid_information_exists(int pid)
 // based on rate limiting rules.
 static inline EBPF_INLINE bool pid_event_ratelimit(u32 pid, int ratelimit_action)
 {
-  const u8 default_max_attempts = 8; // 25 seconds
+  const u8 default_max_attempts = 11; // ~204 seconds
   const u8 fast_max_attempts    = 4; // 1.6 seconds
   const u8 fast_timer_flag      = 0x10;
   u64 *token_ptr                = bpf_map_lookup_elem(&reported_pids, &pid);
