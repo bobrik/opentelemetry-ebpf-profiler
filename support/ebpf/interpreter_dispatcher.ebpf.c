@@ -307,6 +307,11 @@ static EBPF_INLINE int unwind_stop(struct pt_regs *ctx)
   case metricID_UnwindNativeErrWrongTextSection:;
     u64 pid_tgid = (u64)trace->pid << 32 | trace->tid;
     if (report_pid(ctx, pid_tgid, record->ratelimitAction)) {
+      printt(
+        "report_pid unknown_pc comm=%s pid=%d pc=0x%llx",
+        trace->comm,
+        trace->pid,
+        state->pc);
       increment_metric(metricID_NumUnknownPC);
     }
     // fallthrough

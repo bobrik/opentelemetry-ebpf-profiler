@@ -33,6 +33,7 @@ static EBPF_INLINE int do_process_free(void *ctx, u32 pid)
   }
 
   if (report_pid(ctx, (u64)pid << 32 | pid, RATELIMIT_ACTION_RESET)) {
+    printt("report_pid exit pid=%d", pid);
     increment_metric(metricID_NumProcExit);
   }
 exit:

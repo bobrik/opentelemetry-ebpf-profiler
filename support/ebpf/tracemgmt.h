@@ -825,6 +825,11 @@ static inline EBPF_INLINE int collect_trace(
   if (!pid_information_exists(pid)) {
     u64 pid_tgid = (u64)pid << 32 | tid;
     if (report_pid(ctx, pid_tgid, RATELIMIT_ACTION_DEFAULT)) {
+      printt(
+        "report_pid new_proc comm=%s pid=%d pc=0x%llx",
+        trace->comm,
+        pid,
+        record->state.pc);
       increment_metric(metricID_NumProcNew);
     }
     return 0;

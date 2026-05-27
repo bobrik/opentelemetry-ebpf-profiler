@@ -1116,7 +1116,7 @@ func (t *Tracer) StartMapMonitors(ctx context.Context, traceOutChan chan<- *libp
 			}
 
 			for _, pidTid := range pidEvents {
-				log.Debugf("=> %v", pidTid)
+				log.Infof("Processing PID event: pid=%d tid=%d", pidTid.PID(), pidTid.TID())
 				t.pidEvents <- pidTid
 			}
 
