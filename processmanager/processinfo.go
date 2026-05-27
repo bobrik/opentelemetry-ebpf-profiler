@@ -481,6 +481,10 @@ func (pm *ProcessManager) SynchronizeProcess(pr process.Process) {
 	pid := pr.PID()
 	log.Debugf("= PID: %v", pid)
 
+	exe, _ := pr.GetExe()
+
+	log.Infof("Synchronize Process: %s [pid = %d]", exe, pr.PID())
+
 	// Abort early if process is waiting for cleanup in ProcessedUntil
 	pm.mu.Lock()
 	_, ok := pm.exitEvents[pid]
