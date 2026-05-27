@@ -668,6 +668,12 @@ const (
 	// Number of samples skipped because the process is too new
 	IDSamplesSkippedProcessTooNew = 293
 
+	// Number of times an unsupported executable mapping negative-cache entry was hit
+	IDUnwindNativeUnsupportedMappingHit = 294
+
+	// Number of times bpf_find_vma found no VMA for the current PC
+	IDUnwindNativeErrNoVMA = 295
+
 	// max number of ID values, keep this as *last entry*
-	IDMax = 294
+	IDMax = 296
 )

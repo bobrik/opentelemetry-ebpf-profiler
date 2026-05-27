@@ -34,6 +34,7 @@ import (
 	"go.opentelemetry.io/ebpf-profiler/process"
 	"go.opentelemetry.io/ebpf-profiler/processcontext"
 	"go.opentelemetry.io/ebpf-profiler/reporter"
+	"go.opentelemetry.io/ebpf-profiler/support"
 	"go.opentelemetry.io/ebpf-profiler/times"
 	"go.opentelemetry.io/ebpf-profiler/util"
 )
@@ -321,6 +322,51 @@ func (pm *ProcessManager) processRemovedMapping(pid libpf.PID, m *Mapping) uint6
 	return deleted
 }
 
+func unsupportedMappingFromRaw(m *process.RawMapping) UnsupportedMapping {
+	return UnsupportedMapping{
+		Vaddr:  libpf.Address(m.Vaddr),
+		Length: m.Length,
+		Device: m.Device,
+		Inode:  m.Inode,
+	}
+}
+
+func (pm *ProcessManager) processNewUnsupportedMapping(pid libpf.PID,
+	m *UnsupportedMapping) uint64 {
+	prefixes, err := lpm.CalculatePrefixList(uint64(m.Vaddr), uint64(m.Vaddr)+m.Length)
+	if err != nil {
+		log.Errorf("Failed to create unsupported mapping LPM entries for PID %d: %v", pid, err)
+		return 0
+	}
+
+	added := uint64(0)
+	for _, prefix := range prefixes {
+		if err = pm.ebpf.UpdatePidInterpreterMapping(pid, prefix,
+			support.ProgUnwindUnsupported, 0, 0); err != nil {
+			log.Errorf("Failed to update unsupported pid_page_to_mapping_info (pid: %d, page: 0x%x/%d): %v",
+				pid, prefix.Key, prefix.Length, err)
+			break
+		}
+		added++
+	}
+	return added
+}
+
+func (pm *ProcessManager) processRemovedUnsupportedMapping(pid libpf.PID,
+	m *UnsupportedMapping) uint64 {
+	prefixes, err := lpm.CalculatePrefixList(uint64(m.Vaddr), uint64(m.Vaddr)+m.Length)
+	if err != nil {
+		log.Errorf("Failed to create unsupported mapping LPM entries for PID %d: %v", pid, err)
+		return 0
+	}
+
+	deleted, err := pm.ebpf.DeletePidPageMappingInfo(pid, prefixes)
+	if err != nil {
+		log.Errorf("Failed to delete unsupported mappings for PID %d: %v", pid, err)
+	}
+	return deleted
+}
+
 // Caller is responsible to hold pm.mu write lock to avoid race conditions.
 func (pm *ProcessManager) processRemovedInterpreters(pid libpf.PID,
 	interpretersValid libpf.Set[util.OnDiskFileIdentifier]) {
@@ -460,6 +506,9 @@ func (pm *ProcessManager) processPIDExit(pid libpf.PID) {
 	for idx := range info.mappings {
 		deleted += pm.processRemovedMapping(pid, &info.mappings[idx])
 	}
+	for idx := range info.unsupportedMappings {
+		deleted += pm.processRemovedUnsupportedMapping(pid, &info.unsupportedMappings[idx])
+	}
 	pm.pidPageToMappingInfoSize -= min(pm.pidPageToMappingInfoSize, deleted)
 	pm.processRemovedInterpreters(pid, libpf.Set[util.OnDiskFileIdentifier]{})
 }
@@ -511,6 +560,7 @@ func (pm *ProcessManager) SynchronizeProcess(pr process.Process) {
 
 	// Get existing info
 	oldMappings := info.mappings
+	oldUnsupportedMappings := info.unsupportedMappings
 	newProcess := len(info.mappings) == 0
 	var numInterpreters int
 	if intrp, ok := pm.interpreters[pid]; ok {
@@ -524,6 +574,11 @@ func (pm *ProcessManager) SynchronizeProcess(pr process.Process) {
 		m := &oldMappings[idx]
 		mpRemove[uint64(m.Vaddr)] = m
 	}
+	mpUnsupportedRemove := make(map[uint64]*UnsupportedMapping, len(oldUnsupportedMappings))
+	for idx := range oldUnsupportedMappings {
+		m := &oldUnsupportedMappings[idx]
+		mpUnsupportedRemove[uint64(m.Vaddr)] = m
+	}
 
 	// interpreterMappings collects the subset of mappings relevant to interpreters:
 	// executable anonymous mappings (JIT) and DLL file-backed mappings (.NET PE).
@@ -533,6 +588,8 @@ func (pm *ProcessManager) SynchronizeProcess(pr process.Process) {
 	capHint := max(32, min(len(oldMappings), 256))
 	mappings := make([]Mapping, 0, capHint)
 	mpAdd := make([]*Mapping, 0, capHint)
+	unsupportedMappings := make([]UnsupportedMapping, 0, 8)
+	mpUnsupportedAdd := make([]*UnsupportedMapping, 0, 8)
 	var processContextInfo processcontext.Info
 
 	pm.mappingStats.numProcAttempts.Add(1)
@@ -561,6 +618,7 @@ func (pm *ProcessManager) SynchronizeProcess(pr process.Process) {
 		}
 
 		m.Path = libpf.Intern(m.Path).String()
+		mappingSupported := false
 
 		if mappingNeeded {
 			var fm libpf.FrameMapping
@@ -591,11 +649,26 @@ func (pm *ProcessManager) SynchronizeProcess(pr process.Process) {
 				if newMapping {
 					mpAdd = append(mpAdd, &mappings[len(mappings)-1])
 				}
+				mappingSupported = true
 			}
 		}
 
 		if interpreterNeeded {
 			interpreterMappings = append(interpreterMappings, m)
+		}
+		if !mappingSupported {
+			unsupportedMapping := unsupportedMappingFromRaw(&m)
+			if oldm, ok := mpUnsupportedRemove[m.Vaddr]; ok {
+				if oldm.Length == unsupportedMapping.Length &&
+					oldm.Device == unsupportedMapping.Device && oldm.Inode == unsupportedMapping.Inode {
+					delete(mpUnsupportedRemove, m.Vaddr)
+					unsupportedMappings = append(unsupportedMappings, *oldm)
+					return true
+				}
+			}
+			unsupportedMappings = append(unsupportedMappings, unsupportedMapping)
+			mpUnsupportedAdd = append(mpUnsupportedAdd,
+				&unsupportedMappings[len(unsupportedMappings)-1])
 		}
 		return true
 	})
@@ -654,7 +727,24 @@ func (pm *ProcessManager) SynchronizeProcess(pr process.Process) {
 	pm.pidPageToMappingInfoSize -= min(pm.pidPageToMappingInfoSize, numChanges)
 	pm.mu.Lock()
 	pm.processRemovedInterpreters(pid, interpretersValid)
+	interpreters := pm.interpreters[pid]
+	hasInterpreters := len(interpreters) > 0
 	pm.mu.Unlock()
+
+	// Remove stale unsupported mappings before adding new mappings. An unsupported
+	// mapping can become supported at the same address, and map updates use UpdateNoExist.
+	numChanges = 0
+	if hasInterpreters {
+		for idx := range oldUnsupportedMappings {
+			numChanges += pm.processRemovedUnsupportedMapping(pid,
+				&oldUnsupportedMappings[idx])
+		}
+	} else {
+		for _, m := range mpUnsupportedRemove {
+			numChanges += pm.processRemovedUnsupportedMapping(pid, m)
+		}
+	}
+	pm.pidPageToMappingInfoSize -= min(pm.pidPageToMappingInfoSize, numChanges)
 
 	// Add new mappings
 	numChanges = 0
@@ -662,6 +752,14 @@ func (pm *ProcessManager) SynchronizeProcess(pr process.Process) {
 		numChanges += pm.processNewMapping(pid, m)
 	}
 	pm.pidPageToMappingInfoSize += numChanges
+
+	if !hasInterpreters {
+		numChanges = 0
+		for _, m := range mpUnsupportedAdd {
+			numChanges += pm.processNewUnsupportedMapping(pid, m)
+		}
+		pm.pidPageToMappingInfoSize += numChanges
+	}
 
 	// Update metadata of the process.
 	var meta process.ProcessMeta
@@ -676,12 +774,16 @@ func (pm *ProcessManager) SynchronizeProcess(pr process.Process) {
 	info = pm.getPidInformation(pid, pr)
 	if info != nil {
 		info.mappings = mappings
+		if hasInterpreters {
+			info.unsupportedMappings = nil
+		} else {
+			info.unsupportedMappings = unsupportedMappings
+		}
 		if updateProcessMeta {
 			info.meta = meta
 		}
 		info.meta.ProcessContextInfo = processContextInfo
 	}
-	interpreters := pm.interpreters[pid]
 	pm.mu.Unlock()
 
 	// Synchronize all interpreters with updated mappings

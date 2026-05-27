@@ -2146,5 +2146,19 @@
     "name": "SamplesSkippedProcessTooNew",
     "field": "bpf.samples.skipped_process_too_new",
     "id": 293
+  },
+  {
+    "description": "Number of times an unsupported executable mapping negative-cache entry was hit",
+    "type": "counter",
+    "name": "UnwindNativeUnsupportedMappingHit",
+    "field": "bpf.native.unsupported_mapping_hits",
+    "id": 294
+  },
+  {
+    "description": "Number of times bpf_find_vma found no VMA for the current PC",
+    "type": "counter",
+    "name": "UnwindNativeErrNoVMA",
+    "field": "bpf.native.errors.no_vma",
+    "id": 295
   }
 ]

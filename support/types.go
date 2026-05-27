@@ -34,19 +34,20 @@ const (
 )
 
 const (
-	ProgUnwindStop     = 0x0
-	ProgUnwindNative   = 0x1
-	ProgUnwindHotspot  = 0x2
-	ProgUnwindPython   = 0x4
-	ProgUnwindPHP      = 0x5
-	ProgUnwindRuby     = 0x6
-	ProgUnwindPerl     = 0x3
-	ProgUnwindV8       = 0x7
-	ProgUnwindDotnet   = 0x8
-	ProgUnwindDotnet10 = 0x9
-	ProgGoLabels       = 0xa
-	ProgUnwindBEAM     = 0xb
-	ProgUnwindLuaJIT   = 0xc
+	ProgUnwindStop        = 0x0
+	ProgUnwindNative      = 0x1
+	ProgUnwindHotspot     = 0x2
+	ProgUnwindPython      = 0x4
+	ProgUnwindPHP         = 0x5
+	ProgUnwindRuby        = 0x6
+	ProgUnwindPerl        = 0x3
+	ProgUnwindV8          = 0x7
+	ProgUnwindDotnet      = 0x8
+	ProgUnwindDotnet10    = 0x9
+	ProgGoLabels          = 0xa
+	ProgUnwindBEAM        = 0xb
+	ProgUnwindLuaJIT      = 0xc
+	ProgUnwindUnsupported = 0xff
 )
 
 const (
@@ -62,7 +63,7 @@ const (
 const UnwindInfoMaxEntries = 0x4000
 
 const (
-	MetricIDBeginCumulative = 0x6b
+	MetricIDBeginCumulative = 0x6d
 )
 
 const (
@@ -501,4 +502,6 @@ var MetricsTranslation = []metrics.MetricID{
 	0x68: metrics.IDUnwindErrBadDTVRead,
 	0x69: metrics.IDBPFRingbufOutputErr,
 	0x6a: metrics.IDSamplesSkippedProcessTooNew,
+	0x6b: metrics.IDUnwindNativeUnsupportedMappingHit,
+	0x6c: metrics.IDUnwindNativeErrNoVMA,
 }

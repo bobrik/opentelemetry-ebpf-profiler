@@ -143,6 +143,22 @@ type Mapping struct {
 	FrameMapping libpf.FrameMapping
 }
 
+// UnsupportedMapping represents an executable memory mapping that is known to
+// exist but cannot be unwound by the enabled tracers.
+type UnsupportedMapping struct {
+	// Vaddr represents the starting virtual address of the mapping.
+	Vaddr libpf.Address
+
+	// Length is the length of the mapping.
+	Length uint64
+
+	// Device number of the backing file.
+	Device uint64
+
+	// Inode number of the backing file.
+	Inode uint64
+}
+
 // GetOnDiskFileIdentifier returns the OnDiskFileIdentifier for the mapping
 func (m *Mapping) GetOnDiskFileIdentifier() util.OnDiskFileIdentifier {
 	return util.OnDiskFileIdentifier{
@@ -158,6 +174,8 @@ type processInfo struct {
 	meta process.ProcessMeta
 	// executable mappings sorted by FileID and mapping start address
 	mappings []Mapping
+	// executable mappings known to be unsupported by enabled tracers
+	unsupportedMappings []UnsupportedMapping
 	// C-library Thread Specific Data information
 	libcInfo *libc.LibcInfo
 }
