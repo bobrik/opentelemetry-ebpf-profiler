@@ -665,6 +665,12 @@ const (
 	// Number of cache hits for the dotnet PE open/parse error LRU
 	IDDotnetPEInfoErrCacheHit = 292
 
+	// Number of times an unsupported executable mapping negative-cache entry was hit
+	IDUnwindNativeUnsupportedMappingHit = 293
+
+	// Number of times bpf_find_vma found no VMA for the current PC
+	IDUnwindNativeErrNoVMA = 294
+
 	// max number of ID values, keep this as *last entry*
-	IDMax = 293
+	IDMax = 295
 )

@@ -331,6 +331,12 @@ enum {
   // number of bpf_ringbuf_output failures
   metricID_BPFRingbufOutputErr,
 
+  // number of times an unsupported mapping negative-cache entry was hit
+  metricID_UnwindNativeUnsupportedMappingHit,
+
+  // number of times bpf_find_vma found no VMA for the current PC
+  metricID_UnwindNativeErrNoVMA,
+
   //
   // Metric IDs above are for counters (cumulative values)
   //
@@ -364,6 +370,11 @@ typedef enum TracePrograms {
   PROG_UNWIND_LUAJIT,
   NUM_TRACER_PROGS,
 } TracePrograms;
+
+// PROG_UNWIND_UNSUPPORTED marks pid_page_to_mapping_info entries that are known
+// executable mappings but cannot be unwound by the enabled tracers. It is not a
+// tail-call target and must not be added to NUM_TRACER_PROGS.
+#define PROG_UNWIND_UNSUPPORTED 0xff
 
 // TraceOrigin describes the source of the trace. This enables
 // origin specific handling of traces in user space.

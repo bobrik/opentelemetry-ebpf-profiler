@@ -425,6 +425,26 @@ decode_bias_and_unwind_program(u64 bias_and_unwind_program, u64 *bias, int *unwi
   *unwind_program = bias_and_unwind_program >> 56;
 }
 
+typedef struct FindVMAContext {
+  u8 unused;
+} FindVMAContext;
+
+static long find_vma_callback(
+  UNUSED struct task_struct *task, UNUSED struct vm_area_struct *vma, UNUSED void *callback_ctx)
+{
+  return 0;
+}
+
+static inline EBPF_INLINE bool no_vma_contains_pc(u64 pc)
+{
+  FindVMAContext callback_ctx = {};
+  struct task_struct *task    = bpf_get_current_task_btf();
+  long ret                    = bpf_find_vma(task, pc, find_vma_callback, &callback_ctx, 0);
+
+  // bpf_find_vma returns -ENOENT when task->mm is NULL or no VMA contains the address.
+  return ret == -2;
+}
+
 // resolve_unwind_mapping decodes the current PC's mapping and prepares unwinding information.
 // The state text_section_id and text_section_offset are updated accordingly. The unwinding program
 // index that should be used is written to the given `unwinder` pointer.
@@ -460,12 +480,27 @@ static inline EBPF_INLINE ErrorCode resolve_unwind_mapping(PerCPURecord *record,
   // Check if we have the data for this virtual address
   PIDPageMappingInfo *val = bpf_map_lookup_elem(&pid_page_to_mapping_info, &key);
   if (!val) {
+    if (no_vma_contains_pc(pc)) {
+      char comm[16] = {};
+      bpf_get_current_comm(&comm, sizeof(comm));
+      printt("no vma for comm=%s pid=%d pc=0x%llx", comm, pid, pc);
+      state->error_metric = metricID_UnwindNativeErrNoVMA;
+      return ERR_NATIVE_NO_VMA;
+    }
     DEBUG_PRINT("Failure to look up interval memory mapping for PC 0x%lx", (unsigned long)pc);
     state->error_metric = metricID_UnwindNativeErrWrongTextSection;
     return ERR_NATIVE_NO_PID_PAGE_MAPPING;
   }
 
   decode_bias_and_unwind_program(val->bias_and_unwind_program, &state->text_section_bias, unwinder);
+  if (*unwinder == PROG_UNWIND_UNSUPPORTED) {
+    char comm[16] = {};
+    bpf_get_current_comm(&comm, sizeof(comm));
+    printt("unsupported mapping hit comm=%s pid=%d pc=0x%llx", comm, pid, pc);
+    state->error_metric = metricID_UnwindNativeUnsupportedMappingHit;
+    state->unwind_error = ERR_NATIVE_UNSUPPORTED_MAPPING;
+    return ERR_NATIVE_UNSUPPORTED_MAPPING;
+  }
   state->text_section_id     = val->file_id;
   state->text_section_offset = pc - state->text_section_bias;
   DEBUG_PRINT(
@@ -532,6 +567,7 @@ get_next_unwinder_after_native_frame(PerCPURecord *record, int *unwinder)
   DEBUG_PRINT("==== Resolve next frame unwinder: frame %d ====", record->trace.num_frames);
   ErrorCode error = resolve_unwind_mapping(record, unwinder);
   if (error) {
+    *unwinder = PROG_UNWIND_STOP;
     return error;
   }
 

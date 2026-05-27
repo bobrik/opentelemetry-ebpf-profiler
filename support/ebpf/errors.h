@@ -160,8 +160,7 @@ typedef enum ErrorCode {
   // Native: Unable to read the IRQ stack link
   ERR_NATIVE_CHASE_IRQ_STACK_LINK = 4010,
 
-  // Native: Unexpectedly encountered a kernel mode pointer while attempting to unwind user-mode
-  // stack
+  // Native: Unexpectedly encountered a kernel mode pointer while attempting to unwind user-mode stack
   ERR_NATIVE_UNEXPECTED_KERNEL_ADDRESS = 4011,
 
   // Native: Unable to locate the PID page mapping for the current instruction pointer
@@ -181,6 +180,12 @@ typedef enum ErrorCode {
 
   // Native: Code is running in x86_64 32-bit compat mode.
   ERR_NATIVE_X64_32BIT_COMPAT_MODE = 4017,
+
+  // Native: The instruction pointer is in a known unsupported executable mapping
+  ERR_NATIVE_UNSUPPORTED_MAPPING = 4018,
+
+  // Native: No VMA contains the current instruction pointer
+  ERR_NATIVE_NO_VMA = 4019,
 
   // V8: Encountered a bad frame pointer during V8 unwinding
   ERR_V8_BAD_FP = 5000,
