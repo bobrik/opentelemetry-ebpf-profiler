@@ -113,3 +113,14 @@ func TestValidateErrorMode(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateFilterProcessAge(t *testing.T) {
+	cfg := validConfig()
+	cfg.FilterProcessAge = -1 * time.Second
+
+	err := xconfmap.Validate(cfg)
+	require.Error(t, err)
+	require.Equal(t,
+		"invalid argument for filter-process-age. The value should be a non-negative duration. 0 disables process age filtering",
+		err.Error())
+}

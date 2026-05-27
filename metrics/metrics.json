@@ -2139,5 +2139,12 @@
     "name": "DotnetPEInfoErrCacheHit",
     "field": "agent.dotnet.pe_info_err_cache.hits",
     "id": 292
+  },
+  {
+    "description": "Number of samples skipped because the process is too new",
+    "type": "counter",
+    "name": "SamplesSkippedProcessTooNew",
+    "field": "bpf.samples.skipped_process_too_new",
+    "id": 293
   }
 ]

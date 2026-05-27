@@ -97,6 +97,7 @@ func (c *Controller) Start(ctx context.Context) error {
 		IncludeTracers:         includeTracers,
 		FilterErrorFrames:      !c.config.SendErrorFrames,
 		FilterIdleFrames:       !c.config.SendIdleFrames,
+		FilterProcessAge:       c.config.FilterProcessAge,
 		SamplesPerSecond:       c.config.SamplesPerSecond,
 		MapScaleFactor:         int(c.config.MapScaleFactor),
 		KernelVersionCheck:     !c.config.NoKernelVersionCheck,

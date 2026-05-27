@@ -665,6 +665,9 @@ const (
 	// Number of cache hits for the dotnet PE open/parse error LRU
 	IDDotnetPEInfoErrCacheHit = 292
 
+	// Number of samples skipped because the process is too new
+	IDSamplesSkippedProcessTooNew = 293
+
 	// max number of ID values, keep this as *last entry*
-	IDMax = 293
+	IDMax = 294
 )
