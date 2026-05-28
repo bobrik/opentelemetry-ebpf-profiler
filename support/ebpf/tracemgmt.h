@@ -50,7 +50,6 @@ extern u32 vma_vm_file_offset;
 // vma_vm_flags_offset is declared in native_stack_trace.ebpf.c
 extern u32 vma_vm_flags_offset;
 
-#define ENOENT  2
 #define VM_EXEC 0x00000004UL
 
 // increment_metric increments the value of the given metricID by 1
@@ -456,8 +455,12 @@ typedef struct VMAInfo {
   bool found;
   bool executable;
   bool anonymous;
-  bool shape_known;
 } VMAInfo;
+
+static inline EBPF_INLINE bool vma_shape_available()
+{
+  return vma_vm_file_offset != 0 && vma_vm_flags_offset != 0;
+}
 
 static long
 find_vma_callback(UNUSED struct task_struct *task, struct vm_area_struct *vma, void *callback_ctx)
@@ -465,7 +468,11 @@ find_vma_callback(UNUSED struct task_struct *task, struct vm_area_struct *vma, v
   VMAInfo *info = callback_ctx;
   info->found   = true;
 
-  if (vma_vm_file_offset == 0 || vma_vm_flags_offset == 0) {
+  // Keep defaults neutral if the shape reads below are unavailable or fail.
+  info->executable = true;
+  info->anonymous  = false;
+
+  if (!vma_shape_available()) {
     return 0;
   }
 
@@ -480,9 +487,8 @@ find_vma_callback(UNUSED struct task_struct *task, struct vm_area_struct *vma, v
     return 0;
   }
 
-  info->shape_known = true;
-  info->anonymous   = (vm_file == 0);
-  info->executable  = ((vm_flags & VM_EXEC) != 0);
+  info->anonymous  = (vm_file == 0);
+  info->executable = ((vm_flags & VM_EXEC) != 0);
   return 0;
 }
 
@@ -490,16 +496,8 @@ static inline EBPF_INLINE VMAInfo find_vma_info_for_pc(u64 pc)
 {
   VMAInfo info = {};
 
-  if (!vma_lookup_enabled) {
-    return info;
-  }
-
   struct task_struct *task = bpf_get_current_task_btf();
-  long ret                 = bpf_find_vma(task, pc, find_vma_callback, &info, 0);
-  if (ret == -ENOENT) {
-    info.found       = false;
-    info.shape_known = true;
-  }
+  bpf_find_vma(task, pc, find_vma_callback, &info, 0);
 
   return info;
 }
@@ -568,22 +566,31 @@ refine_missing_mapping_error(UnwindState *state, bool interpreter_uses_anonymous
   }
 
   bool update_unwind_error = state->unwind_error == ERR_NATIVE_NO_PID_PAGE_MAPPING;
+  if (!vma_lookup_enabled) {
+    return;
+  }
+
   VMAInfo vma              = find_vma_info_for_pc(state->pc);
-  if (vma_lookup_enabled && !vma.found && vma.shape_known) {
+  if (!vma.found) {
     state->error_metric = metricID_UnwindNativeErrNoVMA;
     if (update_unwind_error) {
       state->unwind_error = ERR_NATIVE_NO_VMA;
     }
     return;
   }
-  if (vma.shape_known && !vma.executable) {
+
+  if (!vma_shape_available()) {
+    return;
+  }
+
+  if (!vma.executable) {
     state->error_metric = metricID_UnwindNativeErrNonExecutableVMA;
     if (update_unwind_error) {
       state->unwind_error = ERR_NATIVE_NON_EXECUTABLE_VMA;
     }
     return;
   }
-  if (vma.shape_known && vma.executable && vma.anonymous && !interpreter_uses_anonymous_mappings) {
+  if (vma.anonymous && !interpreter_uses_anonymous_mappings) {
     state->error_metric = metricID_UnwindNativeErrUnsupportedAnonymousMapping;
     if (update_unwind_error) {
       state->unwind_error = ERR_NATIVE_UNSUPPORTED_MAPPING;
