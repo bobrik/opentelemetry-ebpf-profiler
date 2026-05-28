@@ -2139,5 +2139,26 @@
     "name": "DotnetPEInfoErrCacheHit",
     "field": "agent.dotnet.pe_info_err_cache.hits",
     "id": 292
+  },
+  {
+    "description": "Number of times bpf_find_vma found no VMA for the current PC",
+    "type": "counter",
+    "name": "UnwindNativeErrNoVMA",
+    "field": "bpf.native.errors.no_vma",
+    "id": 293
+  },
+  {
+    "description": "Number of native-only anonymous executable VMA misses suppressed in eBPF",
+    "type": "counter",
+    "name": "UnwindNativeErrUnsupportedAnonymousMapping",
+    "field": "bpf.native.errors.unsupported_anonymous_mapping",
+    "id": 294
+  },
+  {
+    "description": "Number of times the current PC was found in a non-executable VMA",
+    "type": "counter",
+    "name": "UnwindNativeErrNonExecutableVMA",
+    "field": "bpf.native.errors.non_executable_vma",
+    "id": 295
   }
 ]

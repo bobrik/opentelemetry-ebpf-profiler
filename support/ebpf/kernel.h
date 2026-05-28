@@ -70,6 +70,7 @@ typedef u64 __be64;
 #define ATOMIC_ADD(ptr, n) __sync_fetch_and_add(ptr, n)
 
 struct task_struct;
+struct vm_area_struct;
 
 // Defined in arch/{x86,arm64}/include/asm/ptrace.h
 #if defined(__x86_64)

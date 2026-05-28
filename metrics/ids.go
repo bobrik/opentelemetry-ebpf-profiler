@@ -665,6 +665,15 @@ const (
 	// Number of cache hits for the dotnet PE open/parse error LRU
 	IDDotnetPEInfoErrCacheHit = 292
 
+	// Number of times bpf_find_vma found no VMA for the current PC
+	IDUnwindNativeErrNoVMA = 293
+
+	// Number of native-only anonymous executable VMA misses suppressed in eBPF
+	IDUnwindNativeErrUnsupportedAnonymousMapping = 294
+
+	// Number of times the current PC was found in a non-executable VMA
+	IDUnwindNativeErrNonExecutableVMA = 295
+
 	// max number of ID values, keep this as *last entry*
-	IDMax = 293
+	IDMax = 296
 )

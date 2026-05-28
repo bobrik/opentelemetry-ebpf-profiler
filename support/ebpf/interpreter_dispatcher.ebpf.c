@@ -79,6 +79,20 @@ struct pid_events_t {
   __uint(max_entries, 65536);
 } pid_events SEC(".maps");
 
+// interpreter_pids contains PIDs with at least one attached interpreter.
+//
+// Absence means no interpreter is attached once pid_page_to_mapping_info proves
+// the PID is already known. The map is positive-only and intentionally
+// no-prealloc so memory use follows attached interpreter PIDs rather than
+// max_entries.
+struct interpreter_pids_t {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __type(key, u32);
+  __type(value, bool);
+  __uint(max_entries, 65536);
+  __uint(map_flags, BPF_F_NO_PREALLOC);
+} interpreter_pids SEC(".maps");
+
 // The native unwinder needs to be able to determine how each mapping should be unwound.
 //
 // This map contains data to help the native unwinder translate from a virtual address in a given

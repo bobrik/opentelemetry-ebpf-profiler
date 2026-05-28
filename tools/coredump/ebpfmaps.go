@@ -9,7 +9,6 @@ import (
 	"unsafe"
 
 	"go.opentelemetry.io/ebpf-profiler/host"
-	"go.opentelemetry.io/ebpf-profiler/interpreter"
 	"go.opentelemetry.io/ebpf-profiler/libpf"
 	"go.opentelemetry.io/ebpf-profiler/libpf/pfunsafe"
 	"go.opentelemetry.io/ebpf-profiler/lpm"
@@ -34,9 +33,19 @@ type ebpfMapsCoredump struct {
 	ctx *ebpfContext
 }
 
-var _ interpreter.EbpfHandler = &ebpfMapsCoredump{}
+var _ pmebpf.EbpfHandler = &ebpfMapsCoredump{}
 
 func (emc *ebpfMapsCoredump) RemoveReportedPID(libpf.PID) {
+}
+
+func (emc *ebpfMapsCoredump) MarkInterpreterPID(pid libpf.PID) error {
+	emc.ctx.addMap(unsafe.Pointer(&C.interpreter_pids), C.u32(pid), []byte{1})
+	return nil
+}
+
+func (emc *ebpfMapsCoredump) UnmarkInterpreterPID(pid libpf.PID) error {
+	emc.ctx.delMap(unsafe.Pointer(&C.interpreter_pids), C.u32(pid))
+	return nil
 }
 
 func (emc *ebpfMapsCoredump) CollectMetrics() []metrics.Metric {

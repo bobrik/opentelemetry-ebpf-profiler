@@ -331,6 +331,15 @@ enum {
   // number of bpf_ringbuf_output failures
   metricID_BPFRingbufOutputErr,
 
+  // number of times bpf_find_vma found no VMA for the current PC
+  metricID_UnwindNativeErrNoVMA,
+
+  // number of native-only anonymous executable VMA misses suppressed in eBPF
+  metricID_UnwindNativeErrUnsupportedAnonymousMapping,
+
+  // number of times the current PC was found in a non-executable VMA
+  metricID_UnwindNativeErrNonExecutableVMA,
+
   //
   // Metric IDs above are for counters (cumulative values)
   //

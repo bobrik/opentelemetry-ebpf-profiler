@@ -41,6 +41,21 @@ extern u32 task_stack_offset;
 // stack_ptregs_offset is declared in native_stack_trace.ebpf.c
 extern u32 stack_ptregs_offset;
 
+// vma_lookup_enabled is declared in native_stack_trace.ebpf.c
+extern bool vma_lookup_enabled;
+
+// vma_shape_enabled is declared in native_stack_trace.ebpf.c
+extern bool vma_shape_enabled;
+
+// vma_vm_file_offset is declared in native_stack_trace.ebpf.c
+extern u32 vma_vm_file_offset;
+
+// vma_vm_flags_offset is declared in native_stack_trace.ebpf.c
+extern u32 vma_vm_flags_offset;
+
+#define ENOENT  2
+#define VM_EXEC 0x00000004UL
+
 // increment_metric increments the value of the given metricID by 1
 static inline EBPF_INLINE void increment_metric(u32 metricID)
 {
@@ -103,6 +118,11 @@ static inline EBPF_INLINE bool pid_information_exists(int pid)
   key.page      = 0;
 
   return bpf_map_lookup_elem(&pid_page_to_mapping_info, &key) != NULL;
+}
+
+static inline EBPF_INLINE bool pid_has_interpreter(u32 pid)
+{
+  return bpf_map_lookup_elem(&interpreter_pids, &pid) != NULL;
 }
 
 // Reset the ratelimit cache
@@ -425,6 +445,58 @@ decode_bias_and_unwind_program(u64 bias_and_unwind_program, u64 *bias, int *unwi
   *unwind_program = bias_and_unwind_program >> 56;
 }
 
+typedef struct VMAInfo {
+  bool found;
+  bool executable;
+  bool anonymous;
+  bool shape_known;
+} VMAInfo;
+
+static long
+find_vma_callback(UNUSED struct task_struct *task, struct vm_area_struct *vma, void *callback_ctx)
+{
+  VMAInfo *info = callback_ctx;
+  info->found   = true;
+
+  if (!vma_shape_enabled) {
+    return 0;
+  }
+
+  u64 vm_file  = 0;
+  u64 vm_flags = 0;
+
+  if (bpf_probe_read_kernel(&vm_file, sizeof(vm_file), (void *)((u64)vma + vma_vm_file_offset))) {
+    return 0;
+  }
+  if (bpf_probe_read_kernel(
+        &vm_flags, sizeof(vm_flags), (void *)((u64)vma + vma_vm_flags_offset))) {
+    return 0;
+  }
+
+  info->shape_known = true;
+  info->anonymous   = (vm_file == 0);
+  info->executable  = ((vm_flags & VM_EXEC) != 0);
+  return 0;
+}
+
+static inline EBPF_INLINE VMAInfo find_vma_info_for_pc(u64 pc)
+{
+  VMAInfo info = {};
+
+  if (!vma_lookup_enabled) {
+    return info;
+  }
+
+  struct task_struct *task = bpf_get_current_task_btf();
+  long ret                 = bpf_find_vma(task, pc, find_vma_callback, &info, 0);
+  if (ret == -ENOENT) {
+    info.found       = false;
+    info.shape_known = true;
+  }
+
+  return info;
+}
+
 // resolve_unwind_mapping decodes the current PC's mapping and prepares unwinding information.
 // The state text_section_id and text_section_offset are updated accordingly. The unwinding program
 // index that should be used is written to the given `unwinder` pointer.
@@ -460,6 +532,20 @@ static inline EBPF_INLINE ErrorCode resolve_unwind_mapping(PerCPURecord *record,
   // Check if we have the data for this virtual address
   PIDPageMappingInfo *val = bpf_map_lookup_elem(&pid_page_to_mapping_info, &key);
   if (!val) {
+    VMAInfo vma = find_vma_info_for_pc(pc);
+    if (vma_lookup_enabled && !vma.found && vma.shape_known) {
+      state->error_metric = metricID_UnwindNativeErrNoVMA;
+      return ERR_NATIVE_NO_VMA;
+    }
+    if (vma.shape_known && !vma.executable) {
+      state->error_metric = metricID_UnwindNativeErrNonExecutableVMA;
+      return ERR_NATIVE_NON_EXECUTABLE_VMA;
+    }
+    if (vma.shape_known && vma.executable && vma.anonymous && !pid_has_interpreter((u32)pid)) {
+      state->error_metric = metricID_UnwindNativeErrUnsupportedAnonymousMapping;
+      return ERR_NATIVE_UNSUPPORTED_MAPPING;
+    }
+
     DEBUG_PRINT("Failure to look up interval memory mapping for PC 0x%lx", (unsigned long)pc);
     state->error_metric = metricID_UnwindNativeErrWrongTextSection;
     return ERR_NATIVE_NO_PID_PAGE_MAPPING;
