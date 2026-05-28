@@ -532,20 +532,6 @@ static inline EBPF_INLINE ErrorCode resolve_unwind_mapping(PerCPURecord *record,
   // Check if we have the data for this virtual address
   PIDPageMappingInfo *val = bpf_map_lookup_elem(&pid_page_to_mapping_info, &key);
   if (!val) {
-    VMAInfo vma = find_vma_info_for_pc(pc);
-    if (vma_lookup_enabled && !vma.found && vma.shape_known) {
-      state->error_metric = metricID_UnwindNativeErrNoVMA;
-      return ERR_NATIVE_NO_VMA;
-    }
-    if (vma.shape_known && !vma.executable) {
-      state->error_metric = metricID_UnwindNativeErrNonExecutableVMA;
-      return ERR_NATIVE_NON_EXECUTABLE_VMA;
-    }
-    if (vma.shape_known && vma.executable && vma.anonymous && !pid_has_interpreter((u32)pid)) {
-      state->error_metric = metricID_UnwindNativeErrUnsupportedAnonymousMapping;
-      return ERR_NATIVE_UNSUPPORTED_MAPPING;
-    }
-
     DEBUG_PRINT("Failure to look up interval memory mapping for PC 0x%lx", (unsigned long)pc);
     state->error_metric = metricID_UnwindNativeErrWrongTextSection;
     return ERR_NATIVE_NO_PID_PAGE_MAPPING;
@@ -565,6 +551,36 @@ static inline EBPF_INLINE ErrorCode resolve_unwind_mapping(PerCPURecord *record,
     state->text_section_offset);
 
   return ERR_OK;
+}
+
+static inline EBPF_INLINE void refine_missing_mapping_error(UnwindState *state, u32 pid)
+{
+  if (state->error_metric != metricID_UnwindNativeErrWrongTextSection) {
+    return;
+  }
+
+  bool update_unwind_error = state->unwind_error == ERR_NATIVE_NO_PID_PAGE_MAPPING;
+  VMAInfo vma = find_vma_info_for_pc(state->pc);
+  if (vma_lookup_enabled && !vma.found && vma.shape_known) {
+    state->error_metric = metricID_UnwindNativeErrNoVMA;
+    if (update_unwind_error) {
+      state->unwind_error = ERR_NATIVE_NO_VMA;
+    }
+    return;
+  }
+  if (vma.shape_known && !vma.executable) {
+    state->error_metric = metricID_UnwindNativeErrNonExecutableVMA;
+    if (update_unwind_error) {
+      state->unwind_error = ERR_NATIVE_NON_EXECUTABLE_VMA;
+    }
+    return;
+  }
+  if (vma.shape_known && vma.executable && vma.anonymous && !pid_has_interpreter(pid)) {
+    state->error_metric = metricID_UnwindNativeErrUnsupportedAnonymousMapping;
+    if (update_unwind_error) {
+      state->unwind_error = ERR_NATIVE_UNSUPPORTED_MAPPING;
+    }
+  }
 }
 
 // matches_interpreter_range checks if the given text section offset falls within
