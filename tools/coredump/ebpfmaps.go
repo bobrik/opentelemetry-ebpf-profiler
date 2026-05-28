@@ -38,16 +38,6 @@ var _ pmebpf.EbpfHandler = &ebpfMapsCoredump{}
 func (emc *ebpfMapsCoredump) RemoveReportedPID(libpf.PID) {
 }
 
-func (emc *ebpfMapsCoredump) MarkInterpreterPID(pid libpf.PID) error {
-	emc.ctx.addMap(unsafe.Pointer(&C.interpreter_pids), C.u32(pid), []byte{1})
-	return nil
-}
-
-func (emc *ebpfMapsCoredump) UnmarkInterpreterPID(pid libpf.PID) error {
-	emc.ctx.delMap(unsafe.Pointer(&C.interpreter_pids), C.u32(pid))
-	return nil
-}
-
 func (emc *ebpfMapsCoredump) CollectMetrics() []metrics.Metric {
 	return []metrics.Metric{}
 }
@@ -133,6 +123,27 @@ func (emc *ebpfMapsCoredump) UpdatePidInterpreterMapping(pid libpf.PID,
 	}
 
 	ctx.pidToPageMapping[cKey] = cValue
+	return nil
+}
+
+func (emc *ebpfMapsCoredump) SetPIDInterpreterUsesAnonymousMappings(pid libpf.PID,
+	enabled bool,
+) error {
+	cKey := C.PIDPage{
+		prefixLen: C.u32(support.BitWidthPID + support.BitWidthPage),
+		pid:       C.u32(bits.ReverseBytes32(uint32(pid))),
+		page:      0,
+	}
+	value, ok := emc.ctx.pidToPageMapping[cKey]
+	if !ok {
+		return fmt.Errorf("PID marker for PID %d is not available", pid)
+	}
+	cValue := (*C.PIDPageMappingInfo)(value)
+	if enabled {
+		cValue.file_id |= C.u64(support.PIDPageMappingInfoFlagInterpreterUsesAnonymousMappings)
+	} else {
+		cValue.file_id &^= C.u64(support.PIDPageMappingInfoFlagInterpreterUsesAnonymousMappings)
+	}
 	return nil
 }
 

@@ -45,12 +45,6 @@ func TestDisableVMAHelperCalls(t *testing.T) {
 		Src:      asm.PseudoFunc,
 		Constant: -1,
 	}.WithReference("find_vma_callback.linked")
-	interpreterPIDs := asm.Instruction{
-		OpCode:   asm.LoadImmOp(asm.DWord),
-		Dst:      asm.R1,
-		Src:      asm.PseudoMapFD,
-		Constant: -1,
-	}.WithReference("interpreter_pids")
 	keep := btf.WithFuncMetadata(asm.FnMapLookupElem.Call().WithSource(asm.Comment("keep")),
 		&btf.Func{Name: "prog"})
 	otherKeep := btf.WithFuncMetadata(asm.FnMapLookupElem.Call().WithSource(asm.Comment("other")),
@@ -66,8 +60,6 @@ func TestDisableVMAHelperCalls(t *testing.T) {
 					findVMACallback,
 					findVMA,
 					getTask,
-					interpreterPIDs,
-					asm.FnMapLookupElem.Call(),
 					findVMACallbackBody,
 					asm.Return(),
 				},
@@ -80,7 +72,7 @@ func TestDisableVMAHelperCalls(t *testing.T) {
 		},
 	}
 
-	require.Equal(t, 5, disableVMAHelperCalls(coll))
+	require.Equal(t, 3, disableVMAHelperCalls(coll))
 	require.Equal(t, asm.FnMapLookupElem.Call(), coll.Programs["prog"].Instructions[0])
 	require.Nil(t, btf.FuncMetadata(&coll.Programs["prog"].Instructions[0]))
 	require.Nil(t, coll.Programs["prog"].Instructions[0].Source())
@@ -88,9 +80,7 @@ func TestDisableVMAHelperCalls(t *testing.T) {
 	require.Equal(t, asm.Mov.Imm(asm.R0, -int32(unix.ENOTSUP)).WithMetadata(findVMA.Metadata),
 		coll.Programs["prog"].Instructions[2])
 	require.Equal(t, asm.Mov.Imm(asm.R0, 0), coll.Programs["prog"].Instructions[3])
-	require.Equal(t, asm.LoadImm(asm.R1, 0, asm.DWord), coll.Programs["prog"].Instructions[4])
-	require.Equal(t, asm.Mov.Imm(asm.R0, 0), coll.Programs["prog"].Instructions[5])
-	require.Len(t, coll.Programs["prog"].Instructions, 6)
+	require.Len(t, coll.Programs["prog"].Instructions, 4)
 	require.Equal(t, otherKeep, coll.Programs["other"].Instructions[0])
 }
 
@@ -105,8 +95,6 @@ func TestDisableVMAHelperCallsOnEmbeddedCollection(t *testing.T) {
 			require.Falsef(t, ins.IsLoadOfFunctionPointer() &&
 				strings.HasPrefix(ins.Reference(), "find_vma_callback"),
 				"%s still references find_vma_callback at instruction %d", progName, i)
-			require.Falsef(t, ins.IsLoadFromMap() && ins.Reference() == "interpreter_pids",
-				"%s still references interpreter_pids at instruction %d", progName, i)
 			require.Falsef(t, strings.HasPrefix(ins.Symbol(), "find_vma_callback"),
 				"%s still contains find_vma_callback subprogram at instruction %d", progName, i)
 			if !ins.IsBuiltinCall() {
@@ -118,15 +106,4 @@ func TestDisableVMAHelperCallsOnEmbeddedCollection(t *testing.T) {
 				"%s still calls bpf_find_vma at instruction %d", progName, i)
 		}
 	}
-}
-
-func TestDisableVMALookupRemovesInterpreterPIDsMap(t *testing.T) {
-	coll, err := support.LoadCollectionSpec()
-	require.NoError(t, err)
-	require.Contains(t, coll.Maps, interpreterPIDsMap)
-
-	require.NotZero(t, disableVMALookup(coll))
-
-	_, ok := coll.Maps[interpreterPIDsMap]
-	require.False(t, ok)
 }

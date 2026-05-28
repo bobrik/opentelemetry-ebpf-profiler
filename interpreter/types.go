@@ -133,6 +133,10 @@ type Data interface {
 
 // Instance is the interface to operate on per-PID data.
 type Instance interface {
+	// UsesAnonymousMappings returns true if this interpreter needs anonymous
+	// executable mappings from the process manager.
+	UsesAnonymousMappings() bool
+
 	// Detach removes any information from the ebpf maps. The pid is given as argument so
 	// simple interpreters can use the global Data also as the Instance implementation.
 	Detach(ebpf EbpfHandler, pid libpf.PID) error

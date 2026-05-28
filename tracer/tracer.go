@@ -73,8 +73,7 @@ const (
 // Shared map name according to
 // https://github.com/open-telemetry/opentelemetry-ebpf-instrumentation/blob/main/devdocs/trace-profile-correlation.md
 const (
-	interpreterPIDsMap = "interpreter_pids"
-	obiSpanTracesMap   = "traces_ctx_v1"
+	obiSpanTracesMap = "traces_ctx_v1"
 )
 
 // Intervals is a subset of config.IntervalsAndTimers.
@@ -377,11 +376,6 @@ func initializeMapsAndPrograms(kmod *kallsyms.Module, cfg *Config) (
 	if err = loadAllMaps(coll, cfg, ebpfMaps); err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to load eBPF maps: %v", err)
 	}
-	if !vmaLookupEnabled {
-		if err = unloadMap(ebpfMaps, interpreterPIDsMap); err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to unload %s: %v", interpreterPIDsMap, err)
-		}
-	}
 
 	// Replace the place holders for map access in the eBPF programs with
 	// the file descriptors of the loaded maps.
@@ -561,20 +555,6 @@ func disableVMAHelperCalls(coll *cebpf.CollectionSpec) int {
 				vmaCallbackPatched = true
 				continue
 			}
-			if ins.IsLoadFromMap() && ins.Reference() == interpreterPIDsMap {
-				lookup := findNextBuiltinCall(progSpec.Instructions, i+1, asm.FnMapLookupElem)
-				if lookup >= 0 {
-					// Older perf_event verifiers reject non-preallocated hash maps before
-					// pruning the VMA-disabled branch that guards pid_has_interpreter().
-					progSpec.Instructions[i] = asm.LoadImm(ins.Dst, 0, asm.DWord)
-					lookupIns := &progSpec.Instructions[lookup]
-					progSpec.Instructions[lookup] = asm.Mov.Imm(asm.R0, 0).
-						WithMetadata(lookupIns.Metadata)
-					patched += 2
-					programPatched = true
-				}
-				continue
-			}
 			if !ins.IsBuiltinCall() {
 				continue
 			}
@@ -608,28 +588,7 @@ func disableVMAHelperCalls(coll *cebpf.CollectionSpec) int {
 }
 
 func disableVMALookup(coll *cebpf.CollectionSpec) int {
-	patched := disableVMAHelperCalls(coll)
-	// pid_has_interpreter() is part of the VMA shape checks. Once those
-	// checks are disabled, no BPF program reads interpreter_pids.
-	delete(coll.Maps, interpreterPIDsMap)
-	return patched
-}
-
-func findNextBuiltinCall(insns asm.Instructions, start int, fn asm.BuiltinFunc) int {
-	for i := start; i < len(insns); i++ {
-		ins := &insns[i]
-		if ins.Symbol() != "" {
-			return -1
-		}
-		if !ins.IsBuiltinCall() {
-			continue
-		}
-		if asm.BuiltinFunc(ins.Constant) == fn {
-			return i
-		}
-		return -1
-	}
-	return -1
+	return disableVMAHelperCalls(coll)
 }
 
 func removeSubprogramsBySymbolPrefix(insns asm.Instructions, prefix string) asm.Instructions {

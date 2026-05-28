@@ -23,16 +23,21 @@ import (
 
 type TestInstance struct {
 	interpreter.InstanceStubs
-	info libc.LibcInfo
+	info                  libc.LibcInfo
+	usesAnonymousMappings bool
 }
 
-func (ti *TestInstance) UpdateLibcInfo(handler interpreter.EbpfHandler, pid libpf.PID, info libc.LibcInfo) error {
+func (ti *TestInstance) UpdateLibcInfo(_ interpreter.EbpfHandler, _ libpf.PID, info libc.LibcInfo) error {
 	ti.info = info
 	return nil
 }
 
-func (ti *TestInstance) Detach(handler interpreter.EbpfHandler, pid libpf.PID) error {
+func (ti *TestInstance) Detach(_ interpreter.EbpfHandler, _ libpf.PID) error {
 	return nil
+}
+
+func (ti *TestInstance) UsesAnonymousMappings() bool {
+	return ti.usesAnonymousMappings
 }
 
 type testInterpreterData struct {
@@ -49,20 +54,21 @@ func (td *testInterpreterData) Attach(ebpf interpreter.EbpfHandler, pid libpf.PI
 func (td *testInterpreterData) Unload(interpreter.EbpfHandler) {}
 
 type testEbpfHandler struct {
-	markInterpreterPIDErr   error
-	unmarkInterpreterPIDErr error
-	markInterpreterPIDs     []libpf.PID
-	unmarkInterpreterPIDs   []libpf.PID
+	setInterpreterUsesAnonymousMappingsErr error
+	interpreterUsesAnonymousMappings       []struct {
+		pid     libpf.PID
+		enabled bool
+	}
 }
 
-func (h *testEbpfHandler) MarkInterpreterPID(pid libpf.PID) error {
-	h.markInterpreterPIDs = append(h.markInterpreterPIDs, pid)
-	return h.markInterpreterPIDErr
-}
-
-func (h *testEbpfHandler) UnmarkInterpreterPID(pid libpf.PID) error {
-	h.unmarkInterpreterPIDs = append(h.unmarkInterpreterPIDs, pid)
-	return h.unmarkInterpreterPIDErr
+func (h *testEbpfHandler) SetPIDInterpreterUsesAnonymousMappings(pid libpf.PID,
+	enabled bool,
+) error {
+	h.interpreterUsesAnonymousMappings = append(h.interpreterUsesAnonymousMappings, struct {
+		pid     libpf.PID
+		enabled bool
+	}{pid: pid, enabled: enabled})
+	return h.setInterpreterUsesAnonymousMappingsErr
 }
 
 func (h *testEbpfHandler) UpdateInterpreterOffsets(uint16, host.FileID, []util.Range) error {
@@ -183,7 +189,7 @@ func TestAssignLibcInfoMergesLibcInfo(t *testing.T) {
 	assert.Equal(libcInfoWithDTV.DTVInfo, interp.info.DTVInfo)
 }
 
-func TestHandleNewInterpreterMarksPIDBeforeAttach(t *testing.T) {
+func TestHandleNewInterpreterMarksAnonymousMappingInterest(t *testing.T) {
 	require := require.New(t)
 	pid := libpf.PID(123)
 	oid := util.OnDiskFileIdentifier{DeviceID: 1, InodeNum: 2}
@@ -197,20 +203,21 @@ func TestHandleNewInterpreterMarksPIDBeforeAttach(t *testing.T) {
 		attach: func(interpreter.EbpfHandler, libpf.PID, libpf.Address,
 			remotememory.RemoteMemory,
 		) (interpreter.Instance, error) {
-			require.Equal([]libpf.PID{pid}, ebpf.markInterpreterPIDs)
-			require.Empty(ebpf.unmarkInterpreterPIDs)
-			return &TestInstance{}, nil
+			require.Empty(ebpf.interpreterUsesAnonymousMappings)
+			return &TestInstance{usesAnonymousMappings: true}, nil
 		},
 	}
 
 	err := pm.handleNewInterpreter(process.New(pid, pid), 0, oid, data)
 	require.NoError(err)
 	require.Contains(pm.interpreters[pid], oid)
-	require.Equal([]libpf.PID{pid}, ebpf.markInterpreterPIDs)
-	require.Empty(ebpf.unmarkInterpreterPIDs)
+	require.Equal([]struct {
+		pid     libpf.PID
+		enabled bool
+	}{{pid: pid, enabled: true}}, ebpf.interpreterUsesAnonymousMappings)
 }
 
-func TestHandleNewInterpreterRollsBackMarkerOnAttachFailure(t *testing.T) {
+func TestHandleNewInterpreterDoesNotUpdateAnonymousMappingInterestOnAttachFailure(t *testing.T) {
 	require := require.New(t)
 	pid := libpf.PID(123)
 	oid := util.OnDiskFileIdentifier{DeviceID: 1, InodeNum: 2}
@@ -225,7 +232,6 @@ func TestHandleNewInterpreterRollsBackMarkerOnAttachFailure(t *testing.T) {
 		attach: func(interpreter.EbpfHandler, libpf.PID, libpf.Address,
 			remotememory.RemoteMemory,
 		) (interpreter.Instance, error) {
-			require.Equal([]libpf.PID{pid}, ebpf.markInterpreterPIDs)
 			return nil, attachErr
 		},
 	}
@@ -233,16 +239,15 @@ func TestHandleNewInterpreterRollsBackMarkerOnAttachFailure(t *testing.T) {
 	err := pm.handleNewInterpreter(process.New(pid, pid), 0, oid, data)
 	require.ErrorIs(err, attachErr)
 	require.NotContains(pm.interpreters, pid)
-	require.Equal([]libpf.PID{pid}, ebpf.markInterpreterPIDs)
-	require.Equal([]libpf.PID{pid}, ebpf.unmarkInterpreterPIDs)
+	require.Empty(ebpf.interpreterUsesAnonymousMappings)
 }
 
-func TestHandleNewInterpreterDoesNotAttachOnMarkerFailure(t *testing.T) {
+func TestHandleNewInterpreterDoesNotAssignOnAnonymousMappingMarkerFailure(t *testing.T) {
 	require := require.New(t)
 	pid := libpf.PID(123)
 	oid := util.OnDiskFileIdentifier{DeviceID: 1, InodeNum: 2}
 	markerErr := errors.New("marker failed")
-	ebpf := &testEbpfHandler{markInterpreterPIDErr: markerErr}
+	ebpf := &testEbpfHandler{setInterpreterUsesAnonymousMappingsErr: markerErr}
 	pm := &ProcessManager{
 		ebpf:             ebpf,
 		interpreters:     make(map[libpf.PID]map[util.OnDiskFileIdentifier]interpreter.Instance),
@@ -254,19 +259,21 @@ func TestHandleNewInterpreterDoesNotAttachOnMarkerFailure(t *testing.T) {
 			remotememory.RemoteMemory,
 		) (interpreter.Instance, error) {
 			attachCalled = true
-			return &TestInstance{}, nil
+			return &TestInstance{usesAnonymousMappings: true}, nil
 		},
 	}
 
 	err := pm.handleNewInterpreter(process.New(pid, pid), 0, oid, data)
 	require.ErrorIs(err, markerErr)
-	require.False(attachCalled)
+	require.True(attachCalled)
 	require.NotContains(pm.interpreters, pid)
-	require.Equal([]libpf.PID{pid}, ebpf.markInterpreterPIDs)
-	require.Empty(ebpf.unmarkInterpreterPIDs)
+	require.Equal([]struct {
+		pid     libpf.PID
+		enabled bool
+	}{{pid: pid, enabled: true}}, ebpf.interpreterUsesAnonymousMappings)
 }
 
-func TestHandleNewInterpreterDoesNotRemarkExistingInterpreterPID(t *testing.T) {
+func TestHandleNewInterpreterDoesNotRemarkExistingAnonymousMappingInterest(t *testing.T) {
 	require := require.New(t)
 	pid := libpf.PID(123)
 	oldOID := util.OnDiskFileIdentifier{DeviceID: 1, InodeNum: 1}
@@ -275,7 +282,7 @@ func TestHandleNewInterpreterDoesNotRemarkExistingInterpreterPID(t *testing.T) {
 	pm := &ProcessManager{
 		ebpf: ebpf,
 		interpreters: map[libpf.PID]map[util.OnDiskFileIdentifier]interpreter.Instance{
-			pid: {oldOID: &TestInstance{}},
+			pid: {oldOID: &TestInstance{usesAnonymousMappings: true}},
 		},
 		pidToProcessInfo: map[libpf.PID]*processInfo{pid: {}},
 	}
@@ -283,8 +290,8 @@ func TestHandleNewInterpreterDoesNotRemarkExistingInterpreterPID(t *testing.T) {
 		attach: func(interpreter.EbpfHandler, libpf.PID, libpf.Address,
 			remotememory.RemoteMemory,
 		) (interpreter.Instance, error) {
-			require.Empty(ebpf.markInterpreterPIDs)
-			return &TestInstance{}, nil
+			require.Empty(ebpf.interpreterUsesAnonymousMappings)
+			return &TestInstance{usesAnonymousMappings: true}, nil
 		},
 	}
 
@@ -292,11 +299,10 @@ func TestHandleNewInterpreterDoesNotRemarkExistingInterpreterPID(t *testing.T) {
 	require.NoError(err)
 	require.Contains(pm.interpreters[pid], oldOID)
 	require.Contains(pm.interpreters[pid], newOID)
-	require.Empty(ebpf.markInterpreterPIDs)
-	require.Empty(ebpf.unmarkInterpreterPIDs)
+	require.Empty(ebpf.interpreterUsesAnonymousMappings)
 }
 
-func TestProcessRemovedInterpretersDeletesMarkerForLastInterpreter(t *testing.T) {
+func TestProcessRemovedInterpretersClearsAnonymousMappingInterest(t *testing.T) {
 	require := require.New(t)
 	pid := libpf.PID(123)
 	oid := util.OnDiskFileIdentifier{DeviceID: 1, InodeNum: 2}
@@ -305,13 +311,16 @@ func TestProcessRemovedInterpretersDeletesMarkerForLastInterpreter(t *testing.T)
 		ebpf:                     ebpf,
 		interpreterTracerEnabled: true,
 		interpreters: map[libpf.PID]map[util.OnDiskFileIdentifier]interpreter.Instance{
-			pid: {oid: &TestInstance{}},
+			pid: {oid: &TestInstance{usesAnonymousMappings: true}},
 		},
 	}
 
 	pm.processRemovedInterpreters(pid, libpf.Set[util.OnDiskFileIdentifier]{})
 	require.NotContains(pm.interpreters, pid)
-	require.Equal([]libpf.PID{pid}, ebpf.unmarkInterpreterPIDs)
+	require.Equal([]struct {
+		pid     libpf.PID
+		enabled bool
+	}{{pid: pid, enabled: false}}, ebpf.interpreterUsesAnonymousMappings)
 }
 
 func TestProcessRemovedInterpretersKeepsMarkerWhenInterpreterRemains(t *testing.T) {
@@ -325,8 +334,8 @@ func TestProcessRemovedInterpretersKeepsMarkerWhenInterpreterRemains(t *testing.
 		interpreterTracerEnabled: true,
 		interpreters: map[libpf.PID]map[util.OnDiskFileIdentifier]interpreter.Instance{
 			pid: {
-				keptOID:    &TestInstance{},
-				removedOID: &TestInstance{},
+				keptOID:    &TestInstance{usesAnonymousMappings: true},
+				removedOID: &TestInstance{usesAnonymousMappings: true},
 			},
 		},
 	}
@@ -334,20 +343,28 @@ func TestProcessRemovedInterpretersKeepsMarkerWhenInterpreterRemains(t *testing.
 	pm.processRemovedInterpreters(pid, libpf.Set[util.OnDiskFileIdentifier]{keptOID: libpf.Void{}})
 	require.Contains(pm.interpreters[pid], keptOID)
 	require.NotContains(pm.interpreters[pid], removedOID)
-	require.Empty(ebpf.unmarkInterpreterPIDs)
+	require.Empty(ebpf.interpreterUsesAnonymousMappings)
 }
 
-func TestProcessPIDExitDeletesInterpreterPIDMarker(t *testing.T) {
+func TestProcessPIDExitClearsAnonymousMappingInterest(t *testing.T) {
 	require := require.New(t)
 	pid := libpf.PID(123)
 	ebpf := &testEbpfHandler{}
 	pm := &ProcessManager{
-		ebpf:             ebpf,
-		interpreters:     make(map[libpf.PID]map[util.OnDiskFileIdentifier]interpreter.Instance),
+		ebpf:                     ebpf,
+		interpreterTracerEnabled: true,
+		interpreters: map[libpf.PID]map[util.OnDiskFileIdentifier]interpreter.Instance{
+			pid: {
+				{DeviceID: 1, InodeNum: 2}: &TestInstance{usesAnonymousMappings: true},
+			},
+		},
 		pidToProcessInfo: map[libpf.PID]*processInfo{pid: {}},
 		exitEvents:       make(map[libpf.PID]times.KTime),
 	}
 
 	pm.processPIDExit(pid)
-	require.Equal([]libpf.PID{pid}, ebpf.unmarkInterpreterPIDs)
+	require.Equal([]struct {
+		pid     libpf.PID
+		enabled bool
+	}{{pid: pid, enabled: false}}, ebpf.interpreterUsesAnonymousMappings)
 }

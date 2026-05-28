@@ -24,11 +24,9 @@ type EbpfHandler interface {
 	// RemoveReportedPID removes a PID from the reported_pids eBPF map.
 	RemoveReportedPID(pid libpf.PID)
 
-	// MarkInterpreterPID marks a PID as having at least one attached interpreter.
-	MarkInterpreterPID(pid libpf.PID) error
-
-	// UnmarkInterpreterPID removes a PID from the attached-interpreter set.
-	UnmarkInterpreterPID(pid libpf.PID) error
+	// SetPIDInterpreterUsesAnonymousMappings updates the per-PID marker used by eBPF
+	// to decide whether anonymous executable VMAs are relevant for this process.
+	SetPIDInterpreterUsesAnonymousMappings(pid libpf.PID, enabled bool) error
 
 	// UpdateUnwindInfo writes UnwindInfo to given unwind info array index
 	UpdateUnwindInfo(index uint16, info stackdeltatypes.UnwindInfo) error

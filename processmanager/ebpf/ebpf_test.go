@@ -10,7 +10,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"go.opentelemetry.io/ebpf-profiler/libpf"
 	"go.opentelemetry.io/ebpf-profiler/support"
 )
 
@@ -39,11 +38,4 @@ func TestMapID(t *testing.T) {
 
 	_, err := getMapID(1 << (support.StackDeltaBucketLargest + 1))
 	require.Error(t, err)
-}
-
-func TestInterpreterPIDsMapCanBeDisabled(t *testing.T) {
-	impl := &ebpfMapsImpl{}
-
-	require.NoError(t, impl.MarkInterpreterPID(libpf.PID(1234)))
-	require.NoError(t, impl.UnmarkInterpreterPID(libpf.PID(1234)))
 }

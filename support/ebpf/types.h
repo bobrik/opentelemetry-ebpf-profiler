@@ -863,6 +863,9 @@ typedef struct PerCPURecord {
 
   // ratelimitAction determines the PID event rate limiting mode
   u8 ratelimitAction;
+  // interpreterUsesAnonymousMappings is copied from the per-PID marker in
+  // pid_page_to_mapping_info during trace initialization.
+  bool interpreterUsesAnonymousMappings;
 } PerCPURecord;
 
 // https://github.com/torvalds/linux/blob/e9a6fb0bcdd7609be6969112f3fbfcce3b1d4a7c/include/linux/percpu.h#L24C39-L24C47
@@ -1031,6 +1034,9 @@ typedef struct PIDPageMappingInfo {
   // bias can be negative.
   u64 bias_and_unwind_program;
 } PIDPageMappingInfo;
+
+// Stored in file_id for the per-PID dummy pid_page_to_mapping_info entry.
+#define PID_PAGE_MAPPING_INFO_FLAG_INTERPRETER_USES_ANONYMOUS_MAPPINGS (1ULL << 0)
 
 // UNKNOWN_FILE indicates for unknown files.
 #define UNKNOWN_FILE      0x0

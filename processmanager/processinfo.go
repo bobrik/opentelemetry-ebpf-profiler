@@ -170,6 +170,15 @@ func (pm *ProcessManager) assignInterpreter(pid libpf.PID, key util.OnDiskFileId
 	pm.interpreters[pid][key] = instance
 }
 
+func (pm *ProcessManager) pidUsesAnonymousExecutableMemory(pid libpf.PID) bool {
+	for _, instance := range pm.interpreters[pid] {
+		if instance.UsesAnonymousMappings() {
+			return true
+		}
+	}
+	return false
+}
+
 // handleNewInterpreter is called to process new executable memory mappings. It uses the
 // process manager to attach to the process/memory mapping if it is discovered that the
 // memory mapping corresponds with an interpreter.
@@ -190,23 +199,26 @@ func (pm *ProcessManager) handleNewInterpreter(pr process.Process, bias libpf.Ad
 			return nil
 		}
 	}
-	firstInterpreter := len(pm.interpreters[pid]) == 0
-	if firstInterpreter {
-		if err := pm.ebpf.MarkInterpreterPID(pid); err != nil {
-			return fmt.Errorf("failed to mark PID %v as having an interpreter: %w", pid, err)
-		}
-	}
+	hadAnonymousMappingInterest := pm.pidUsesAnonymousExecutableMemory(pid)
 
 	// Slow path: Interpreter detection or attachment needed
 	instance, err := data.Attach(pm.ebpf, pid, bias, pr.GetRemoteMemory())
 	if err != nil {
-		if firstInterpreter {
-			if err := pm.ebpf.UnmarkInterpreterPID(pid); err != nil {
-				log.Errorf("Failed to roll back interpreter PID marker for PID %d: %v", pid, err)
-			}
-		}
 		return fmt.Errorf("failed to attach to %v in PID %v: %w",
 			data, pid, err)
+	}
+	usesAnonymousExecutableMemory := instance != nil && instance.UsesAnonymousMappings()
+	if usesAnonymousExecutableMemory && !hadAnonymousMappingInterest {
+		if err := pm.ebpf.SetPIDInterpreterUsesAnonymousMappings(pid, true); err != nil {
+			if instance != nil {
+				if detachErr := instance.Detach(pm.ebpf, pid); detachErr != nil {
+					log.Errorf("Failed to detach interpreter after marker update failure for PID %d: %v",
+						pid, detachErr)
+				}
+			}
+			return fmt.Errorf("failed to mark PID %v as needing anonymous executable mappings: %w",
+				pid, err)
+		}
 	}
 
 	log.Debugf("Attached to %v interpreter in PID %v", data, pid)
@@ -344,6 +356,7 @@ func (pm *ProcessManager) processRemovedInterpreters(pid libpf.PID,
 		return
 	}
 
+	hadAnonymousMappingInterest := pm.pidUsesAnonymousExecutableMemory(pid)
 	for key, instance := range pm.interpreters[pid] {
 		if _, ok := interpretersValid[key]; ok {
 			continue
@@ -359,8 +372,11 @@ func (pm *ProcessManager) processRemovedInterpreters(pid libpf.PID,
 		// There are no longer any mapped interpreters in the process, therefore we can
 		// remove the entry.
 		delete(pm.interpreters, pid)
-		if err := pm.ebpf.UnmarkInterpreterPID(pid); err != nil {
-			log.Errorf("Failed to delete interpreter PID marker for PID %d: %v", pid, err)
+	}
+	hasAnonymousMappingInterest := pm.pidUsesAnonymousExecutableMemory(pid)
+	if hadAnonymousMappingInterest != hasAnonymousMappingInterest {
+		if err := pm.ebpf.SetPIDInterpreterUsesAnonymousMappings(pid, hasAnonymousMappingInterest); err != nil {
+			log.Errorf("Failed to update anonymous mapping interest for PID %d: %v", pid, err)
 		}
 	}
 }
@@ -465,6 +481,8 @@ func (pm *ProcessManager) processPIDExit(pid libpf.PID) {
 		return
 	}
 
+	pm.processRemovedInterpreters(pid, libpf.Set[util.OnDiskFileIdentifier]{})
+
 	// Delete all entries we have for this particular PID from pid_page_to_mapping_info.
 	deleted, err2 := pm.ebpf.DeletePidPageMappingInfo(pid, []lpm.Prefix{dummyPrefix})
 	if err2 != nil {
@@ -476,11 +494,6 @@ func (pm *ProcessManager) processPIDExit(pid libpf.PID) {
 		deleted += pm.processRemovedMapping(pid, &info.mappings[idx])
 	}
 	pm.pidPageToMappingInfoSize -= min(pm.pidPageToMappingInfoSize, deleted)
-	pm.processRemovedInterpreters(pid, libpf.Set[util.OnDiskFileIdentifier]{})
-	if err2 := pm.ebpf.UnmarkInterpreterPID(pid); err2 != nil {
-		err = errors.Join(err, fmt.Errorf("failed to delete interpreter PID marker for PID %d: %v",
-			pid, err2))
-	}
 }
 
 // SynchronizeProcess triggers ProcessManager to update its internal information
@@ -532,8 +545,10 @@ func (pm *ProcessManager) SynchronizeProcess(pr process.Process) {
 	oldMappings := info.mappings
 	newProcess := len(info.mappings) == 0
 	var numInterpreters int
+	collectAnonymousMappings := false
 	if intrp, ok := pm.interpreters[pid]; ok {
 		numInterpreters = len(intrp)
+		collectAnonymousMappings = pm.pidUsesAnonymousExecutableMemory(pid)
 	}
 	pm.mu.Unlock()
 
@@ -571,8 +586,9 @@ func (pm *ProcessManager) SynchronizeProcess(pr process.Process) {
 
 		// Executable mappings and VDSO, converted directly to libpf.FrameMapping
 		mappingNeeded := m.IsExecutable() && !m.IsAnonymous()
-		// Needed for JIT mappings (Hotspot, V8, BEAM, etc.)
-		interpreterNeeded := m.IsExecutable() && m.IsAnonymous()
+		// Needed for JIT mappings (Hotspot, V8, BEAM, etc.) after an attached
+		// interpreter has announced interest in anonymous executable mappings.
+		interpreterNeeded := collectAnonymousMappings && m.IsExecutable() && m.IsAnonymous()
 		// Needed by .NET to retrieve PE assembly mappings
 		interpreterNeeded = interpreterNeeded || strings.HasSuffix(m.Path, ".dll")
 		if !mappingNeeded && !interpreterNeeded {
@@ -595,6 +611,14 @@ func (pm *ProcessManager) SynchronizeProcess(pr process.Process) {
 				// Error is expected for non-ELF files (e.g. PE DLL);
 				// fm will be invalid and the mapping skipped below but will enter the interpreter mappings block.
 				fm, _ = pm.newFrameMapping(pr, &m)
+				if !collectAnonymousMappings {
+					// newFrameMapping may have attached a JIT-capable interpreter above.
+					// Refresh under the lock so later mappings in this pass can include
+					// anonymous executable mappings for that interpreter.
+					pm.mu.RLock()
+					collectAnonymousMappings = pm.pidUsesAnonymousExecutableMemory(pid)
+					pm.mu.RUnlock()
+				}
 			}
 			if fm.Valid() {
 				key := m.GetOnDiskFileIdentifier()

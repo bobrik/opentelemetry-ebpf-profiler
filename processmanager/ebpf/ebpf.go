@@ -37,13 +37,11 @@ const (
 	updatePoolWorkers = 16
 	// updatePoolQueueCap decides the work queue capacity of each worker.
 	updatePoolQueueCap = 8
-	interpreterPIDsMap = "interpreter_pids"
 )
 
 type ebpfMapsImpl struct {
 	// Interpreter related eBPF maps
 	InterpreterOffsets *cebpf.Map `name:"interpreter_offsets"`
-	InterpreterPIDs    *cebpf.Map `name:"interpreter_pids"`
 	DotnetProcs        *cebpf.Map `name:"dotnet_procs"`
 	PerlProcs          *cebpf.Map `name:"perl_procs"`
 	PyProcs            *cebpf.Map `name:"py_procs"`
@@ -100,9 +98,6 @@ func LoadMaps(ctx context.Context, includeTracers types.IncludedTracers,
 		}
 		mapVal, ok := maps[nameTag]
 		if !ok {
-			if nameTag == interpreterPIDsMap {
-				continue
-			}
 			if !types.IsMapEnabled(nameTag, includeTracers) {
 				continue
 			}
@@ -130,33 +125,6 @@ func LoadMaps(ctx context.Context, includeTracers types.IncludedTracers,
 	impl.updateWorkers = newAsyncMapUpdaterPool(ctx, updatePoolWorkers, updatePoolQueueCap)
 
 	return impl, nil
-}
-
-// MarkInterpreterPID marks a PID as having at least one attached interpreter.
-func (impl *ebpfMapsImpl) MarkInterpreterPID(pid libpf.PID) error {
-	if impl.InterpreterPIDs == nil {
-		return nil
-	}
-	pid32 := uint32(pid)
-	value := true
-	if err := impl.InterpreterPIDs.Update(unsafe.Pointer(&pid32), unsafe.Pointer(&value),
-		cebpf.UpdateAny); err != nil {
-		return fmt.Errorf("failed to mark PID %d as having an interpreter: %w", pid, err)
-	}
-	return nil
-}
-
-// UnmarkInterpreterPID removes a PID from the attached-interpreter set.
-func (impl *ebpfMapsImpl) UnmarkInterpreterPID(pid libpf.PID) error {
-	if impl.InterpreterPIDs == nil {
-		return nil
-	}
-	pid32 := uint32(pid)
-	if err := impl.InterpreterPIDs.Delete(unsafe.Pointer(&pid32)); err != nil &&
-		!errors.Is(err, cebpf.ErrKeyNotExist) {
-		return fmt.Errorf("failed to unmark PID %d as having an interpreter: %w", pid, err)
-	}
-	return nil
 }
 
 // UpdateInterpreterOffsets adds the given moduleRanges to the eBPF map interpreterOffsets.
@@ -277,6 +245,28 @@ func (impl *ebpfMapsImpl) UpdatePidInterpreterMapping(pid libpf.PID, prefix lpm.
 
 	return impl.PidPageToMappingInfo.Update(unsafe.Pointer(&cKey), unsafe.Pointer(&cValue),
 		cebpf.UpdateNoExist)
+}
+
+// SetPIDInterpreterUsesAnonymousMappings updates the per-PID marker used by eBPF to decide
+// whether anonymous executable VMAs are relevant for this process.
+func (impl *ebpfMapsImpl) SetPIDInterpreterUsesAnonymousMappings(pid libpf.PID, enabled bool) error {
+	cKey := getPIDPage(pid, 0, support.BitWidthPage)
+	cValue := support.PIDPageMappingInfo{}
+	if err := impl.PidPageToMappingInfo.Lookup(unsafe.Pointer(&cKey), unsafe.Pointer(&cValue)); err != nil {
+		return fmt.Errorf("failed to lookup PID marker for PID %d: %w", pid, err)
+	}
+
+	if enabled {
+		cValue.File_id |= support.PIDPageMappingInfoFlagInterpreterUsesAnonymousMappings
+	} else {
+		cValue.File_id &^= support.PIDPageMappingInfoFlagInterpreterUsesAnonymousMappings
+	}
+
+	if err := impl.PidPageToMappingInfo.Update(unsafe.Pointer(&cKey), unsafe.Pointer(&cValue),
+		cebpf.UpdateAny); err != nil {
+		return fmt.Errorf("failed to update PID marker for PID %d: %w", pid, err)
+	}
+	return nil
 }
 
 // DeletePidInterpreterMapping removes the element specified by pid, prefix and a corresponding
