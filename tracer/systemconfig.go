@@ -505,21 +505,21 @@ func removeSubprogramsBySymbolPrefix(insns asm.Instructions, prefix string) asm.
 }
 
 func stripProgramExtInfos(insns asm.Instructions) {
-	for i, ins := range insns {
-		if btf.FuncMetadata(&ins) == nil && ins.Source() == nil {
+	iter := insns.Iterate()
+	for iter.Next() {
+		if btf.FuncMetadata(iter.Ins) == nil && iter.Ins.Source() == nil {
 			continue
 		}
 
-		sym := ins.Symbol()
-		ref := ins.Reference()
-		ins.Metadata = asm.Metadata{}
+		sym := iter.Ins.Symbol()
+		ref := iter.Ins.Reference()
+		iter.Ins.Metadata = asm.Metadata{}
 		if sym != "" {
-			ins = ins.WithSymbol(sym)
+			*iter.Ins = iter.Ins.WithSymbol(sym)
 		}
 		if ref != "" {
-			ins = ins.WithReference(ref)
+			*iter.Ins = iter.Ins.WithReference(ref)
 		}
-		insns[i] = ins
 	}
 }
 
