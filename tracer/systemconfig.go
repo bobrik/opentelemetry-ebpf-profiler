@@ -491,16 +491,15 @@ func disableVMAHelperCalls(coll *cebpf.CollectionSpec) int {
 
 func removeSubprogramsBySymbolPrefix(insns asm.Instructions, prefix string) asm.Instructions {
 	out := insns[:0]
-	for i := 0; i < len(insns); {
-		if strings.HasPrefix(insns[i].Symbol(), prefix) {
-			i++
-			for i < len(insns) && insns[i].Symbol() == "" {
-				i++
-			}
-			continue
+	skipping := false
+	iter := insns.Iterate()
+	for iter.Next() {
+		if sym := iter.Ins.Symbol(); sym != "" {
+			skipping = strings.HasPrefix(sym, prefix)
 		}
-		out = append(out, insns[i])
-		i++
+		if !skipping {
+			out = append(out, *iter.Ins)
+		}
 	}
 	return out
 }
