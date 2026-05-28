@@ -462,6 +462,8 @@ static inline EBPF_INLINE bool vma_shape_available()
   return vma_vm_file_offset != 0 && vma_vm_flags_offset != 0;
 }
 
+// Keep this symbol name stable: disableVMAHelperCalls matches the find_vma_callback prefix
+// when removing callback references and subprogram bodies on kernels without VMA lookup support.
 static long
 find_vma_callback(UNUSED struct task_struct *task, struct vm_area_struct *vma, void *callback_ctx)
 {
