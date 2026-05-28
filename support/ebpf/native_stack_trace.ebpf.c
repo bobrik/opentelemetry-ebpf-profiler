@@ -16,10 +16,6 @@ BPF_RODATA_VAR(u64, inverse_pac_mask, 0)
 // It is enabled only on kernels where the loaded BPF object can call bpf_find_vma().
 BPF_RODATA_VAR(bool, vma_lookup_enabled, false)
 
-// vma_shape_enabled is set during load time.
-// It is enabled when vm_area_struct offsets needed for VMA classification are known.
-BPF_RODATA_VAR(bool, vma_shape_enabled, false)
-
 // vma_vm_file_offset is set during load time.
 // The offset of vm_file within vm_area_struct.
 BPF_RODATA_VAR(u32, vma_vm_file_offset, 0)

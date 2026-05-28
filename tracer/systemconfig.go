@@ -32,7 +32,6 @@ type sysConfigVars struct {
 	task_stack_offset   uint32
 	stack_ptregs_offset uint32
 	vma_lookup_enabled  bool
-	vma_shape_enabled   bool
 	vma_vm_file_offset  uint32
 	vma_vm_flags_offset uint32
 }
@@ -150,7 +149,6 @@ func parseVMAOffsets(spec *btf.Spec, vars *sysConfigVars) {
 
 	vars.vma_vm_file_offset = uint32(fileOffset)
 	vars.vma_vm_flags_offset = uint32(flagsOffset)
-	vars.vma_shape_enabled = true
 }
 
 // parseBTF resolves the SystemConfig data from kernel BTF
@@ -388,13 +386,14 @@ func determineSysConfig(coll *cebpf.CollectionSpec, maps map[string]*cebpf.Map,
 		}
 	}
 
+	vmaShapeKnown := vars.vma_vm_file_offset != 0 && vars.vma_vm_flags_offset != 0
 	log.Infof("Found offsets: task stack %#x, pt_regs %#x, tpbase %#x, vma vm_file %#x, vma vm_flags %#x, vma shape %t",
 		vars.task_stack_offset,
 		vars.stack_ptregs_offset,
 		vars.tpbase_offset,
 		vars.vma_vm_file_offset,
 		vars.vma_vm_flags_offset,
-		vars.vma_shape_enabled)
+		vmaShapeKnown)
 
 	return nil
 }
@@ -454,9 +453,6 @@ func loadRodataVars(coll *cebpf.CollectionSpec, kmod *kallsyms.Module, cfg *Conf
 	}
 	if err := coll.Variables["vma_lookup_enabled"].Set(rodataVars.vma_lookup_enabled); err != nil {
 		return fmt.Errorf("failed to set vma_lookup_enabled: %v", err)
-	}
-	if err := coll.Variables["vma_shape_enabled"].Set(rodataVars.vma_shape_enabled); err != nil {
-		return fmt.Errorf("failed to set vma_shape_enabled: %v", err)
 	}
 	if err := coll.Variables["vma_vm_file_offset"].Set(rodataVars.vma_vm_file_offset); err != nil {
 		return fmt.Errorf("failed to set vma_vm_file_offset: %v", err)

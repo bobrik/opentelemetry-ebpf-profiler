@@ -44,9 +44,6 @@ extern u32 stack_ptregs_offset;
 // vma_lookup_enabled is declared in native_stack_trace.ebpf.c
 extern bool vma_lookup_enabled;
 
-// vma_shape_enabled is declared in native_stack_trace.ebpf.c
-extern bool vma_shape_enabled;
-
 // vma_vm_file_offset is declared in native_stack_trace.ebpf.c
 extern u32 vma_vm_file_offset;
 
@@ -468,7 +465,7 @@ find_vma_callback(UNUSED struct task_struct *task, struct vm_area_struct *vma, v
   VMAInfo *info = callback_ctx;
   info->found   = true;
 
-  if (!vma_shape_enabled) {
+  if (vma_vm_file_offset == 0 || vma_vm_flags_offset == 0) {
     return 0;
   }
 
