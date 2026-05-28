@@ -42,6 +42,7 @@ const (
 type ebpfMapsImpl struct {
 	// Interpreter related eBPF maps
 	InterpreterOffsets *cebpf.Map `name:"interpreter_offsets"`
+	InterpreterPIDs    *cebpf.Map `name:"interpreter_pids"`
 	DotnetProcs        *cebpf.Map `name:"dotnet_procs"`
 	PerlProcs          *cebpf.Map `name:"perl_procs"`
 	PyProcs            *cebpf.Map `name:"py_procs"`
@@ -125,6 +126,27 @@ func LoadMaps(ctx context.Context, includeTracers types.IncludedTracers,
 	impl.updateWorkers = newAsyncMapUpdaterPool(ctx, updatePoolWorkers, updatePoolQueueCap)
 
 	return impl, nil
+}
+
+// MarkInterpreterPID marks a PID as having at least one attached interpreter.
+func (impl *ebpfMapsImpl) MarkInterpreterPID(pid libpf.PID) error {
+	pid32 := uint32(pid)
+	value := true
+	if err := impl.InterpreterPIDs.Update(unsafe.Pointer(&pid32), unsafe.Pointer(&value),
+		cebpf.UpdateAny); err != nil {
+		return fmt.Errorf("failed to mark PID %d as having an interpreter: %w", pid, err)
+	}
+	return nil
+}
+
+// UnmarkInterpreterPID removes a PID from the attached-interpreter set.
+func (impl *ebpfMapsImpl) UnmarkInterpreterPID(pid libpf.PID) error {
+	pid32 := uint32(pid)
+	if err := impl.InterpreterPIDs.Delete(unsafe.Pointer(&pid32)); err != nil &&
+		!errors.Is(err, cebpf.ErrKeyNotExist) {
+		return fmt.Errorf("failed to unmark PID %d as having an interpreter: %w", pid, err)
+	}
+	return nil
 }
 
 // UpdateInterpreterOffsets adds the given moduleRanges to the eBPF map interpreterOffsets.

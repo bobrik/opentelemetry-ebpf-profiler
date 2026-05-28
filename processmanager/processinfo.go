@@ -190,9 +190,21 @@ func (pm *ProcessManager) handleNewInterpreter(pr process.Process, bias libpf.Ad
 			return nil
 		}
 	}
+	firstInterpreter := len(pm.interpreters[pid]) == 0
+	if firstInterpreter {
+		if err := pm.ebpf.MarkInterpreterPID(pid); err != nil {
+			return fmt.Errorf("failed to mark PID %v as having an interpreter: %w", pid, err)
+		}
+	}
+
 	// Slow path: Interpreter detection or attachment needed
 	instance, err := data.Attach(pm.ebpf, pid, bias, pr.GetRemoteMemory())
 	if err != nil {
+		if firstInterpreter {
+			if err := pm.ebpf.UnmarkInterpreterPID(pid); err != nil {
+				log.Errorf("Failed to roll back interpreter PID marker for PID %d: %v", pid, err)
+			}
+		}
 		return fmt.Errorf("failed to attach to %v in PID %v: %w",
 			data, pid, err)
 	}
@@ -347,6 +359,9 @@ func (pm *ProcessManager) processRemovedInterpreters(pid libpf.PID,
 		// There are no longer any mapped interpreters in the process, therefore we can
 		// remove the entry.
 		delete(pm.interpreters, pid)
+		if err := pm.ebpf.UnmarkInterpreterPID(pid); err != nil {
+			log.Errorf("Failed to delete interpreter PID marker for PID %d: %v", pid, err)
+		}
 	}
 }
 
@@ -462,6 +477,10 @@ func (pm *ProcessManager) processPIDExit(pid libpf.PID) {
 	}
 	pm.pidPageToMappingInfoSize -= min(pm.pidPageToMappingInfoSize, deleted)
 	pm.processRemovedInterpreters(pid, libpf.Set[util.OnDiskFileIdentifier]{})
+	if err2 := pm.ebpf.UnmarkInterpreterPID(pid); err2 != nil {
+		err = errors.Join(err, fmt.Errorf("failed to delete interpreter PID marker for PID %d: %v",
+			pid, err2))
+	}
 }
 
 // SynchronizeProcess triggers ProcessManager to update its internal information

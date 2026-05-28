@@ -23,11 +23,13 @@ import (
 
 	cebpf "github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
+	"github.com/cilium/ebpf/features"
 	"github.com/cilium/ebpf/link"
 	"github.com/elastic/go-perf"
 	"go.opentelemetry.io/ebpf-profiler/internal/linux"
 	"go.opentelemetry.io/ebpf-profiler/internal/log"
 	"go.opentelemetry.io/ebpf-profiler/libpf/pfunsafe"
+	"golang.org/x/sys/unix"
 
 	"go.opentelemetry.io/ebpf-profiler/kallsyms"
 	"go.opentelemetry.io/ebpf-profiler/libpf"
@@ -343,8 +345,14 @@ func initializeMapsAndPrograms(kmod *kallsyms.Module, cfg *Config) (
 		delete(coll.Programs, schedProcessFreeV2)
 	}
 
+	vmaLookupEnabled, reason := probeVMALookupSupport(cfg)
+	if !vmaLookupEnabled {
+		patched := disableVMAHelperCalls(coll)
+		log.Infof("VMA lookup disabled: %s; patched %d helper calls", reason, patched)
+	}
+
 	// Initialize eBPF variables before loading programs and maps.
-	if err = loadRodataVars(coll, kmod, cfg); err != nil {
+	if err = loadRodataVars(coll, kmod, cfg, vmaLookupEnabled); err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to set RODATA variables: %v", err)
 	}
 
@@ -503,6 +511,61 @@ func initializeMapsAndPrograms(kmod *kallsyms.Module, cfg *Config) (
 	}
 
 	return ebpfMaps, ebpfProgs, innerMapTemplate, nil
+}
+
+func probeVMALookupSupport(cfg *Config) (bool, string) {
+	restoreRlimit, err := rlimit.MaximizeMemlock()
+	if err != nil {
+		return false, fmt.Sprintf("failed to adjust rlimit for VMA helper probe: %v", err)
+	}
+	defer restoreRlimit()
+
+	progTypes := []cebpf.ProgramType{cebpf.PerfEvent}
+	if cfg.OffCPUThreshold > 0 || len(cfg.ProbeLinks) > 0 || cfg.LoadProbe {
+		progTypes = append(progTypes, cebpf.Kprobe)
+	}
+
+	helpers := []asm.BuiltinFunc{asm.FnGetCurrentTaskBtf, asm.FnFindVma}
+	for _, progType := range progTypes {
+		for _, helper := range helpers {
+			if err := features.HaveProgramHelper(progType, helper); err != nil {
+				if errors.Is(err, cebpf.ErrNotSupported) {
+					return false, fmt.Sprintf("%s is not supported for %s", helper, progType)
+				}
+				return false, fmt.Sprintf("failed to probe %s for %s: %v", helper, progType, err)
+			}
+		}
+	}
+
+	return true, ""
+}
+
+func disableVMAHelperCalls(coll *cebpf.CollectionSpec) int {
+	patched := 0
+	for _, progSpec := range coll.Programs {
+		for i := range progSpec.Instructions {
+			ins := &progSpec.Instructions[i]
+			if !ins.IsBuiltinCall() {
+				continue
+			}
+
+			switch asm.BuiltinFunc(ins.Constant) {
+			case asm.FnGetCurrentTaskBtf:
+				// The VMA lookup path is disabled, so this helper should be unreachable.
+				// Return NULL if it is reached anyway.
+				progSpec.Instructions[i] = asm.Mov.Imm(asm.R0, 0).WithMetadata(ins.Metadata)
+				patched++
+			case asm.FnFindVma:
+				// Older kernels reject programs that call unsupported helpers even when
+				// the runtime branch is disabled. Return -ENOTSUP if reached so the
+				// lookup is treated as unavailable, not as a successful lookup.
+				progSpec.Instructions[i] = asm.Mov.Imm(asm.R0, -int32(unix.ENOTSUP)).
+					WithMetadata(ins.Metadata)
+				patched++
+			}
+		}
+	}
+	return patched
 }
 
 // removeTemporaryMaps unloads and deletes eBPF maps that are only required for the

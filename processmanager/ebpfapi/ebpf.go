@@ -24,6 +24,12 @@ type EbpfHandler interface {
 	// RemoveReportedPID removes a PID from the reported_pids eBPF map.
 	RemoveReportedPID(pid libpf.PID)
 
+	// MarkInterpreterPID marks a PID as having at least one attached interpreter.
+	MarkInterpreterPID(pid libpf.PID) error
+
+	// UnmarkInterpreterPID removes a PID from the attached-interpreter set.
+	UnmarkInterpreterPID(pid libpf.PID) error
+
 	// UpdateUnwindInfo writes UnwindInfo to given unwind info array index
 	UpdateUnwindInfo(index uint16, info stackdeltatypes.UnwindInfo) error
 

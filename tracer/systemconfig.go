@@ -31,6 +31,10 @@ type sysConfigVars struct {
 	tpbase_offset       uint64
 	task_stack_offset   uint32
 	stack_ptregs_offset uint32
+	vma_lookup_enabled  bool
+	vma_shape_enabled   bool
+	vma_vm_file_offset  uint32
+	vma_vm_flags_offset uint32
 }
 
 var (
@@ -38,32 +42,72 @@ var (
 	errSystemAnalysisFailed     = errors.New("system analysis helper failed")
 )
 
-// memberByName resolves btf Member from a Struct with given name
-func memberByName(t *btf.Struct, field string) (*btf.Member, error) {
-	for i, m := range t.Members {
-		if m.Name == field {
-			return &t.Members[i], nil
+func unwrapBTFType(t btf.Type) btf.Type {
+	for {
+		switch typ := t.(type) {
+		case *btf.Typedef:
+			t = typ.Type
+		case *btf.Volatile:
+			t = typ.Type
+		case *btf.Const:
+			t = typ.Type
+		case *btf.Restrict:
+			t = typ.Type
+		case *btf.TypeTag:
+			t = typ.Type
+		default:
+			return t
 		}
 	}
-	return nil, fmt.Errorf("member '%s' not found", field)
 }
 
-// calculateFieldOffset calculates the offset for given fieldSpec which
-// can refer to field within nested structs.
+func btfMembers(t btf.Type) ([]btf.Member, error) {
+	switch typ := unwrapBTFType(t).(type) {
+	case *btf.Struct:
+		return typ.Members, nil
+	case *btf.Union:
+		return typ.Members, nil
+	default:
+		return nil, fmt.Errorf("%s is not a struct or union", t.TypeName())
+	}
+}
+
+func resolveBTFField(t btf.Type, field string) (uint, btf.Type, error) {
+	members, err := btfMembers(t)
+	if err != nil {
+		return 0, nil, err
+	}
+
+	for _, member := range members {
+		if member.Name == field {
+			return uint(member.Offset.Bytes()), member.Type, nil
+		}
+	}
+
+	for _, member := range members {
+		if member.Name != "" {
+			continue
+		}
+		offset, typ, err := resolveBTFField(member.Type, field)
+		if err == nil {
+			return uint(member.Offset.Bytes()) + offset, typ, nil
+		}
+	}
+
+	return 0, nil, fmt.Errorf("member '%s' not found", field)
+}
+
+// calculateFieldOffset calculates the offset for given fieldSpec. Each path
+// component may be nested in anonymous structs or unions.
 func calculateFieldOffset(t btf.Type, fieldSpec string) (uint, error) {
 	offset := uint(0)
 	for field := range strings.SplitSeq(fieldSpec, ".") {
-		st, ok := t.(*btf.Struct)
-		if !ok {
-			return 0, fmt.Errorf("field '%s' is not a struct", field)
-		}
-
-		member, err := memberByName(st, field)
+		fieldOffset, fieldType, err := resolveBTFField(t, field)
 		if err != nil {
 			return 0, err
 		}
-		offset += uint(member.Offset.Bytes())
-		t = member.Type
+		offset += fieldOffset
+		t = fieldType
 	}
 	return offset, nil
 }
@@ -80,6 +124,33 @@ func getTSDBaseFieldSpec() string {
 	default:
 		panic("not supported")
 	}
+}
+
+func parseVMAOffsets(spec *btf.Spec, vars *sysConfigVars) {
+	var vmaStruct *btf.Struct
+	if err := spec.TypeByName("vm_area_struct", &vmaStruct); err != nil {
+		log.Debugf("Unable to resolve vm_area_struct from BTF: %v", err)
+		return
+	}
+
+	fileOffset, err := calculateFieldOffset(vmaStruct, "vm_file")
+	if err != nil {
+		log.Debugf("Unable to resolve vm_area_struct.vm_file from BTF: %v", err)
+		return
+	}
+
+	flagsOffset, err := calculateFieldOffset(vmaStruct, "vm_flags")
+	if err != nil {
+		flagsOffset, err = calculateFieldOffset(vmaStruct, "__vm_flags")
+		if err != nil {
+			log.Debugf("Unable to resolve vm_area_struct vm_flags field from BTF: %v", err)
+			return
+		}
+	}
+
+	vars.vma_vm_file_offset = uint32(fileOffset)
+	vars.vma_vm_flags_offset = uint32(flagsOffset)
+	vars.vma_shape_enabled = true
 }
 
 // parseBTF resolves the SystemConfig data from kernel BTF
@@ -112,6 +183,7 @@ func parseBTF(vars *sysConfigVars) error {
 		return err
 	}
 	vars.tpbase_offset = uint64(tpbaseOffset)
+	parseVMAOffsets(spec, vars)
 
 	return nil
 }
@@ -316,16 +388,21 @@ func determineSysConfig(coll *cebpf.CollectionSpec, maps map[string]*cebpf.Map,
 		}
 	}
 
-	log.Infof("Found offsets: task stack %#x, pt_regs %#x, tpbase %#x",
+	log.Infof("Found offsets: task stack %#x, pt_regs %#x, tpbase %#x, vma vm_file %#x, vma vm_flags %#x, vma shape %t",
 		vars.task_stack_offset,
 		vars.stack_ptregs_offset,
-		vars.tpbase_offset)
+		vars.tpbase_offset,
+		vars.vma_vm_file_offset,
+		vars.vma_vm_flags_offset,
+		vars.vma_shape_enabled)
 
 	return nil
 }
 
 // loadRodataVars initializes RODATA variables for the eBPF programs.
-func loadRodataVars(coll *cebpf.CollectionSpec, kmod *kallsyms.Module, cfg *Config) error {
+func loadRodataVars(coll *cebpf.CollectionSpec, kmod *kallsyms.Module, cfg *Config,
+	vmaLookupEnabled bool,
+) error {
 	if cfg.VerboseMode {
 		if err := coll.Variables["with_debug_output"].Set(uint32(1)); err != nil {
 			return fmt.Errorf("failed to set debug output: %v", err)
@@ -354,7 +431,9 @@ func loadRodataVars(coll *cebpf.CollectionSpec, kmod *kallsyms.Module, cfg *Conf
 		return fmt.Errorf("failed to set inverse_pac_mask: %v", err)
 	}
 
-	rodataVars := sysConfigVars{}
+	rodataVars := sysConfigVars{
+		vma_lookup_enabled: vmaLookupEnabled,
+	}
 
 	systemAnalysisColl, maps, err := prepareAnalysis(coll)
 	if err != nil {
@@ -372,6 +451,18 @@ func loadRodataVars(coll *cebpf.CollectionSpec, kmod *kallsyms.Module, cfg *Conf
 	}
 	if err := coll.Variables["stack_ptregs_offset"].Set(rodataVars.stack_ptregs_offset); err != nil {
 		return fmt.Errorf("failed to set stack_ptregs_offset: %v", err)
+	}
+	if err := coll.Variables["vma_lookup_enabled"].Set(rodataVars.vma_lookup_enabled); err != nil {
+		return fmt.Errorf("failed to set vma_lookup_enabled: %v", err)
+	}
+	if err := coll.Variables["vma_shape_enabled"].Set(rodataVars.vma_shape_enabled); err != nil {
+		return fmt.Errorf("failed to set vma_shape_enabled: %v", err)
+	}
+	if err := coll.Variables["vma_vm_file_offset"].Set(rodataVars.vma_vm_file_offset); err != nil {
+		return fmt.Errorf("failed to set vma_vm_file_offset: %v", err)
+	}
+	if err := coll.Variables["vma_vm_flags_offset"].Set(rodataVars.vma_vm_flags_offset); err != nil {
+		return fmt.Errorf("failed to set vma_vm_flags_offset: %v", err)
 	}
 
 	return nil
