@@ -604,15 +604,25 @@ func (f *File) EHFrame() (*Prog, error) {
 // VisitNotes iterates the ELF notes.
 // The visitor must make copies of the 'data' it keeps after return.
 func (f *File) VisitNotes(visitor func(uint64, []byte) bool) error {
-	notes := f.findProg(elf.PT_NOTE)
-	if notes == nil {
-		return nil
+	for i := range f.Progs {
+		notes := &f.Progs[i]
+		if notes.Type != elf.PT_NOTE {
+			continue
+		}
+
+		stopped := false
+		rdr := pfbufio.NewReader(f.elfReader, int64(notes.Off), int64(notes.Filesz))
+		err := visitNotes(rdr, func(note uint64, desc []byte) bool {
+			stopped = !visitor(note, desc)
+			return !stopped
+		})
+		pfbufio.PutReader(rdr)
+		if err != nil || stopped {
+			return err
+		}
 	}
 
-	rdr := pfbufio.NewReader(f.elfReader, int64(notes.Off), int64(notes.Filesz))
-	defer pfbufio.PutReader(rdr)
-
-	return visitNotes(rdr, visitor)
+	return nil
 }
 
 // parseNotes parses and caches the ELF notes for the File.

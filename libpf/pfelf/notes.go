@@ -53,7 +53,7 @@ func visitNotes(rdr *pfbufio.Reader, visitor func(uint64, []byte) bool) error {
 		}
 
 		id := NamespaceUnknown
-		alignedSize := int((note.Namesz + 3) &^ 3)
+		alignedSize := alignNoteSize(int(note.Namesz))
 		namespace, err := rdr.ReadN(alignedSize)
 		switch err {
 		case nil:
@@ -75,7 +75,7 @@ func visitNotes(rdr *pfbufio.Reader, visitor func(uint64, []byte) bool) error {
 			return err
 		}
 
-		alignedSize = int((note.Descsz + 3) &^ 3)
+		alignedSize = alignNoteSize(int(note.Descsz))
 		desc, err := rdr.ReadN(alignedSize)
 		switch err {
 		case nil:
@@ -96,6 +96,10 @@ func visitNotes(rdr *pfbufio.Reader, visitor func(uint64, []byte) bool) error {
 			return nil
 		}
 	}
+}
+
+func alignNoteSize(size int) int {
+	return (size + 3) &^ 3
 }
 
 func getBuildIDFromNotesFile(r io.ReaderAt) (string, error) {
