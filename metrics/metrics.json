@@ -2181,5 +2181,19 @@
     "name": "SamplesSkippedProcessTooNew",
     "field": "bpf.samples.skipped_process_too_new",
     "id": 298
+  },
+  {
+    "description": "Number of cache hits in the kernel frame cache",
+    "type": "counter",
+    "name": "KernelFrameCacheHit",
+    "field": "agent.kernel_frame_cache.hits",
+    "id": 299
+  },
+  {
+    "description": "Number of cache misses in the kernel frame cache",
+    "type": "counter",
+    "name": "KernelFrameCacheMiss",
+    "field": "agent.kernel_frame_cache.misses",
+    "id": 300
   }
 ]

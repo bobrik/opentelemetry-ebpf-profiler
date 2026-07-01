@@ -20,7 +20,7 @@ import (
 
 func assertSymbol(t *testing.T, s *Symbolizer, pc libpf.Address,
 	eModName, eFuncName string, eOffset uint) {
-	kmod, err := s.GetModuleByAddress(pc)
+	kmod, err := s.Snapshot().GetModuleByAddress(pc)
 	if assert.NoError(t, err) && assert.Equal(t, kmod.Name(), eModName) {
 		funcName, offset, err := kmod.LookupSymbolByAddress(pc)
 		if assert.NoError(t, err) {
@@ -32,7 +32,11 @@ func assertSymbol(t *testing.T, s *Symbolizer, pc libpf.Address,
 
 func TestKallSyms(t *testing.T) {
 	// override the metadata loading to avoid mixing data from running system
+	oldLoadModuleMetadata := loadModuleMetadata
 	loadModuleMetadata = func(_ *Module, _ string, _ int64) bool { return true }
+	t.Cleanup(func() {
+		loadModuleMetadata = oldLoadModuleMetadata
+	})
 
 	s := &Symbolizer{}
 
@@ -64,13 +68,14 @@ ffffffffc03cc9d0 t perf_trace_xfs_fs_class	[xfs]
 ffffffffc03ccb20 t perf_trace_xfs_inodegc_shrinker_scan	[xfs]`))
 	require.NoError(t, err)
 
-	_, err = s.GetModuleByName("foo")
+	snap := s.Snapshot()
+	_, err = snap.GetModuleByName("foo")
 	assert.Equal(t, err, ErrNoModule)
 
-	_, err = s.GetModuleByAddress(0x1010)
+	_, err = snap.GetModuleByAddress(0x1010)
 	assert.Equal(t, err, ErrNoModule)
 
-	_, err = s.GetModuleByAddress(0xffffffffffff0000)
+	_, err = snap.GetModuleByAddress(0xffffffffffff0000)
 	assert.Equal(t, err, ErrNoModule)
 
 	assertSymbol(t, s, 0xffffffffb5000470, Kernel, "startup_64_setup_gdt_idt", 0)
@@ -99,14 +104,60 @@ ffffffffc1400000 t foo	[foo]
 ffffffffc13fcb20 t init_xfs_fs	[xfs]`))
 	require.NoError(t, err)
 
-	_, err = s.GetModuleByAddress(0xffffffffc03cc610 + 1)
+	snap = s.Snapshot()
+	_, err = snap.GetModuleByAddress(0xffffffffc03cc610 + 1)
 	assert.Equal(t, ErrNoModule, err)
 
-	_, err = s.GetModuleByAddress(0xffffffffc13fcb20)
+	_, err = snap.GetModuleByAddress(0xffffffffc13fcb20)
 	assert.Equal(t, ErrNoModule, err)
 
 	assertSymbol(t, s, 0xffffffffb5000470, "vmlinux", "startup_64_setup_gdt_idt", 0)
 	assertSymbol(t, s, 0xffffffffc13cc610+1, "xfs", "perf_trace_xfs_attr_list_class", 1)
+}
+
+func TestModuleSnapshotGenerations(t *testing.T) {
+	oldLoadModuleMetadata := loadModuleMetadata
+	loadModuleMetadata = func(_ *Module, _ string, _ int64) bool { return true }
+	t.Cleanup(func() {
+		loadModuleMetadata = oldLoadModuleMetadata
+	})
+
+	s := &Symbolizer{}
+
+	err := s.updateSymbolsFrom(strings.NewReader(`ffffffffb5000000 T _text
+ffffffffb5000123 T startup_64
+ffffffffb6000000 T _etext
+ffffffffc03cc610 t perf_trace_xfs_attr_list_class	[xfs]
+ffffffffc03cc770 t perf_trace_xfs_perag_class	[xfs]`))
+	require.NoError(t, err)
+
+	snap1 := s.Snapshot()
+	_, modGen1 := snap1.Generations()
+	assert.Equal(t, uint64(1), modGen1)
+	kmod, err := snap1.GetModuleByAddress(0xffffffffc03cc610)
+	require.NoError(t, err)
+	assert.Equal(t, "xfs", kmod.Name())
+
+	err = s.updateSymbolsFrom(strings.NewReader(`ffffffffb5000000 T _text
+ffffffffb5000123 T startup_64
+ffffffffb6000000 T _etext
+ffffffffc13cc610 t perf_trace_xfs_attr_list_class	[xfs]
+ffffffffc13cc770 t perf_trace_xfs_perag_class	[xfs]`))
+	require.NoError(t, err)
+
+	snap2 := s.Snapshot()
+	_, modGen2 := snap2.Generations()
+	assert.Equal(t, uint64(2), modGen2)
+
+	kmod, err = snap1.GetModuleByAddress(0xffffffffc03cc610)
+	require.NoError(t, err)
+	assert.Equal(t, "xfs", kmod.Name())
+
+	_, err = snap2.GetModuleByAddress(0xffffffffc03cc610)
+	assert.ErrorIs(t, err, ErrNoModule)
+	kmod, err = snap2.GetModuleByAddress(0xffffffffc13cc610)
+	require.NoError(t, err)
+	assert.Equal(t, "xfs", kmod.Name())
 }
 
 // setBPFSymbols stores the given symbols in the bpfSymbolizer as a sorted
@@ -117,14 +168,17 @@ func setBPFSymbols(s *bpfSymbolizer, symbols []bpfSymbol) {
 	slices.SortFunc(sorted, func(a, b bpfSymbol) int {
 		return cmp.Compare(a.address, b.address)
 	})
-	s.table.Store(&bpfSymbolTable{symbols: sorted})
+	s.table.Store(&bpfSymbolTable{
+		generation: 1,
+		symbols:    sorted,
+	})
 }
 
 // assertBPFSymbol checks that the BPF symbolizer resolves addr to the expected
 // function name and offset.
 func assertBPFSymbol(t *testing.T, s *Symbolizer, addr libpf.Address, eFuncName string, eOffset uint) {
 	t.Helper()
-	funcName, off, ok := s.LookupBPFSymbol(addr)
+	funcName, off, ok := s.Snapshot().LookupBPFSymbol(addr)
 	if assert.True(t, ok, "expected BPF symbol at 0x%x", addr) {
 		assert.Equal(t, eFuncName, funcName)
 		assert.Equal(t, eOffset, off)
@@ -134,7 +188,7 @@ func assertBPFSymbol(t *testing.T, s *Symbolizer, addr libpf.Address, eFuncName 
 // assertNoBPFSymbol checks that the BPF symbolizer does not resolve addr.
 func assertNoBPFSymbol(t *testing.T, s *Symbolizer, addr libpf.Address) {
 	t.Helper()
-	_, _, ok := s.LookupBPFSymbol(addr)
+	_, _, ok := s.Snapshot().LookupBPFSymbol(addr)
 	assert.False(t, ok, "expected no BPF symbol at 0x%x", addr)
 }
 
@@ -257,6 +311,45 @@ func TestBPFUpdates(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assertNoBPFSymbol(t, s, 0xffffffc080f26000)
+}
+
+func TestBPFSnapshotGenerations(t *testing.T) {
+	s := &Symbolizer{
+		bpf: &bpfSymbolizer{},
+	}
+
+	const addr = libpf.Address(0xffffffc080f26228)
+	setBPFSymbols(s.bpf, []bpfSymbol{
+		{address: addr, size: 512, name: "bpf_prog_00354c172d366337_sd_devices"},
+	})
+
+	snap1 := s.Snapshot()
+	bpfGen1, _ := snap1.Generations()
+	assert.Equal(t, uint64(1), bpfGen1)
+	assertBPFSymbol(t, s, addr, "bpf_prog_00354c172d366337_sd_devices", 0)
+
+	err := s.bpf.handleBPFUpdate(nil)
+	assert.Error(t, err)
+	snapAfterLost := s.Snapshot()
+	bpfGenAfterLost, _ := snapAfterLost.Generations()
+	assert.Equal(t, bpfGen1, bpfGenAfterLost)
+
+	err = s.bpf.handleBPFUpdate(&perf.KSymbolRecord{
+		Addr:  uint64(addr),
+		Name:  "bpf_prog_00354c172d366337_sd_devices",
+		Flags: unix.PERF_RECORD_KSYMBOL_FLAGS_UNREGISTER,
+	})
+	require.NoError(t, err)
+
+	snap2 := s.Snapshot()
+	bpfGen2, _ := snap2.Generations()
+	assert.Equal(t, bpfGen1+1, bpfGen2)
+	assertNoBPFSymbol(t, s, addr)
+
+	funcName, off, ok := snap1.LookupBPFSymbol(addr)
+	require.True(t, ok)
+	assert.Equal(t, "bpf_prog_00354c172d366337_sd_devices", funcName)
+	assert.Equal(t, uint(0), off)
 }
 
 func BenchmarkSort(b *testing.B) {
