@@ -748,6 +748,16 @@ func (s Snapshot) IsGenerationValid(generation Generation) bool {
 	return s.modules != nil && s.modules.symbolGeneration() == generation
 }
 
+// BPFGeneration returns the current BPF symbol table generation.
+func (s Snapshot) BPFGeneration() Generation {
+	return s.bpf.symbolGeneration()
+}
+
+// KernelGeneration returns the current kernel module symbol table generation.
+func (s Snapshot) KernelGeneration() Generation {
+	return s.modules.symbolGeneration()
+}
+
 // ResolveAddress finds the symbol source containing addr. BPF symbols are
 // preferred over module symbols because they are tracked separately.
 func (s Snapshot) ResolveAddress(addr libpf.Address) (AddressResolution, bool) {

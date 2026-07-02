@@ -90,10 +90,13 @@ type ProcessManager struct {
 	// executable. It caches results based on iNode number and device ID. Locked LRU.
 	elfInfoCache *lru.LRU[util.OnDiskFileIdentifier, elfInfo]
 
-	// frameCache stores mappings from BPF frame to the symbolized frames.
-	// This allows avoiding the overhead of re-doing user-mode symbolization
-	// of frames that we have recently seen already.
+	// frameCache stores mappings from BPF frames or raw kernel frame addresses to
+	// the symbolized frames. This avoids re-doing symbolization of frames that we
+	// have recently seen already.
 	frameCache *lru.LRU[frameCacheKey, libpf.Frames]
+
+	// kernelSymbols resolves raw kernel frame addresses.
+	kernelSymbols kernelSymbols
 
 	// traceReporter is the interface to report traces
 	traceReporter reporter.TraceReporter
