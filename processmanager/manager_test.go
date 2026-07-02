@@ -6,6 +6,7 @@ import (
 	"slices"
 	"testing"
 	"time"
+	"unique"
 
 	lru "github.com/elastic/go-freelru"
 	"github.com/stretchr/testify/assert"
@@ -15,6 +16,7 @@ import (
 	"go.opentelemetry.io/ebpf-profiler/interpreter"
 	golang "go.opentelemetry.io/ebpf-profiler/interpreter/go"
 	"go.opentelemetry.io/ebpf-profiler/interpreter/interpreterconfig"
+	"go.opentelemetry.io/ebpf-profiler/kallsyms"
 	"go.opentelemetry.io/ebpf-profiler/libpf"
 	"go.opentelemetry.io/ebpf-profiler/libpf/pfelf"
 	"go.opentelemetry.io/ebpf-profiler/process"
@@ -32,14 +34,132 @@ func (tc *traceCapture) ReportTraceEvent(trace *libpf.Trace, _ *samples.TraceEve
 	return nil
 }
 
+type fakeKernelSymbols struct {
+	snapshot *fakeKernelSymbolsSnapshot
+}
+
+func (f fakeKernelSymbols) Snapshot() kernelSymbolsSnapshot {
+	return f.snapshot
+}
+
+type fakeKernelSymbolsSnapshot struct {
+	validGenerations map[kallsyms.Generation]bool
+	resolutions      map[libpf.Address]kallsyms.AddressResolution
+	resolveCount     int
+}
+
+func (s *fakeKernelSymbolsSnapshot) IsGenerationValid(generation kallsyms.Generation) bool {
+	return s.validGenerations[generation]
+}
+
+func (s *fakeKernelSymbolsSnapshot) ResolveAddress(address libpf.Address) (kallsyms.AddressResolution, bool) {
+	s.resolveCount++
+	resolution, ok := s.resolutions[address]
+	return resolution, ok
+}
+
 func TestNewConfiguresFrameCacheSize(t *testing.T) {
 	pm, err := New(t.Context(), interpreterconfig.NoInterpreters(), time.Hour, time.Hour,
-		&testEbpfHandler{}, nil, nil, nil, 1, false, libpf.Set[string]{})
+		&testEbpfHandler{}, nil, nil, nil, nil, 1, false, libpf.Set[string]{})
 	require.NoError(t, err)
 
-	pm.frameCache.Add(frameCacheKey{data: [3]uint64{1}}, libpf.Frames{})
-	pm.frameCache.Add(frameCacheKey{data: [3]uint64{2}}, libpf.Frames{})
+	pm.frameCache.Add(frameCacheKey{data: [3]uint64{1}}, frameCacheValue{})
+	pm.frameCache.Add(frameCacheKey{data: [3]uint64{2}}, frameCacheValue{})
 	require.Equal(t, 1, pm.frameCache.Len())
+}
+
+func TestKernelFramesUseSharedFrameCache(t *testing.T) {
+	frameCache, err := lru.New[frameCacheKey, frameCacheValue](1024, hashFrameCacheKey)
+	require.NoError(t, err)
+
+	const address = libpf.Address(0x1234)
+	const generation = kallsyms.Generation(3)
+	snapshot := &fakeKernelSymbolsSnapshot{
+		validGenerations: map[kallsyms.Generation]bool{generation: true},
+		resolutions: map[libpf.Address]kallsyms.AddressResolution{
+			address: {
+				Source:     kallsyms.SymbolSourceBPF,
+				Generation: generation,
+				BPFName:    "bpf_func",
+				BPFOffset:  12,
+			},
+		},
+	}
+	capture := &traceCapture{}
+	pm := &ProcessManager{
+		frameCache:    frameCache,
+		kernelSymbols: fakeKernelSymbols{snapshot: snapshot},
+		traceReporter: capture,
+	}
+
+	for range 2 {
+		pm.HandleTrace(&libpf.EbpfTrace{
+			NumKernelFrames: 1,
+			FrameData:       []uint64{uint64(address)},
+		})
+	}
+
+	require.Len(t, capture.traces, 2)
+	require.Len(t, capture.traces[0].Frames, 1)
+	frame := capture.traces[0].Frames[0].Value()
+	assert.Equal(t, libpf.KernelFrame, frame.Type)
+	assert.Equal(t, "bpf_func", frame.FunctionName.String())
+	assert.Equal(t, libpf.AddressOrLineno(12), frame.AddressOrLineno)
+
+	assert.Equal(t, 1, snapshot.resolveCount)
+	assert.Equal(t, uint64(1), pm.frameCacheMiss.Load())
+	assert.Equal(t, uint64(1), pm.frameCacheHit.Load())
+}
+
+func TestKernelFrameCacheIgnoresInvalidEntries(t *testing.T) {
+	frameCache, err := lru.New[frameCacheKey, frameCacheValue](1024, hashFrameCacheKey)
+	require.NoError(t, err)
+
+	const address = libpf.Address(0x1234)
+	const staleGeneration = kallsyms.Generation(2)
+	const currentGeneration = kallsyms.Generation(3)
+	cachedFrame := unique.Make(libpf.Frame{
+		Type:            libpf.KernelFrame,
+		AddressOrLineno: 0,
+		FunctionName:    libpf.Intern("cached"),
+	})
+	frameCache.Add(kernelFrameCacheKey(address), frameCacheValue{
+		frames:           libpf.Frames{cachedFrame},
+		kernelGeneration: staleGeneration,
+	})
+
+	snapshot := &fakeKernelSymbolsSnapshot{
+		validGenerations: map[kallsyms.Generation]bool{currentGeneration: true},
+		resolutions: map[libpf.Address]kallsyms.AddressResolution{
+			address: {
+				Source:     kallsyms.SymbolSourceBPF,
+				Generation: currentGeneration,
+				BPFName:    "fresh",
+				BPFOffset:  8,
+			},
+		},
+	}
+	capture := &traceCapture{}
+	pm := &ProcessManager{
+		frameCache:    frameCache,
+		kernelSymbols: fakeKernelSymbols{snapshot: snapshot},
+		traceReporter: capture,
+	}
+
+	pm.HandleTrace(&libpf.EbpfTrace{
+		NumKernelFrames: 1,
+		FrameData:       []uint64{uint64(address)},
+	})
+
+	require.Len(t, capture.traces, 1)
+	require.Len(t, capture.traces[0].Frames, 1)
+	if capture.traces[0].Frames[0] == cachedFrame {
+		t.Fatalf("expected stale cache entry to be ignored")
+	}
+	assert.Equal(t, "fresh", capture.traces[0].Frames[0].Value().FunctionName.String())
+	assert.Equal(t, 1, snapshot.resolveCount)
+	assert.Equal(t, uint64(1), pm.frameCacheMiss.Load())
+	assert.Equal(t, uint64(0), pm.frameCacheHit.Load())
 }
 
 func TestFrameCacheCrossProcessPollution(t *testing.T) {
@@ -79,7 +199,7 @@ func TestFrameCacheCrossProcessPollution(t *testing.T) {
 
 	goODID := util.OnDiskFileIdentifier{DeviceID: 1, InodeNum: 1}
 
-	frameCache, err := lru.New[frameCacheKey, libpf.Frames](1024, hashFrameCacheKey)
+	frameCache, err := lru.New[frameCacheKey, frameCacheValue](1024, hashFrameCacheKey)
 	require.NoError(t, err)
 
 	goMappings := []Mapping{
@@ -176,7 +296,7 @@ func TestFrameCacheSharesNativeFallbackFramesAcrossProcesses(t *testing.T) {
 		[]byte{0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE})
 	require.NoError(t, err)
 
-	frameCache, err := lru.New[frameCacheKey, libpf.Frames](1024, hashFrameCacheKey)
+	frameCache, err := lru.New[frameCacheKey, frameCacheValue](1024, hashFrameCacheKey)
 	require.NoError(t, err)
 
 	mappings := []Mapping{

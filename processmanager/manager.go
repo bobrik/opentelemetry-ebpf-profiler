@@ -20,6 +20,7 @@ import (
 	"go.opentelemetry.io/ebpf-profiler/interpreter/apmint"
 	"go.opentelemetry.io/ebpf-profiler/interpreter/dotnet"
 	"go.opentelemetry.io/ebpf-profiler/interpreter/interpreterconfig"
+	"go.opentelemetry.io/ebpf-profiler/kallsyms"
 	"go.opentelemetry.io/ebpf-profiler/libpf"
 	"go.opentelemetry.io/ebpf-profiler/libpf/pfunsafe"
 	"go.opentelemetry.io/ebpf-profiler/lpm"
@@ -61,7 +62,9 @@ var (
 func New(ctx context.Context, interpretersConfig interpreterconfig.Config, monitorInterval time.Duration,
 	executableUnloadDelay time.Duration, ebpf pmebpf.EbpfHandler, traceReporter reporter.TraceReporter,
 	exeReporter reporter.ExecutableReporter, sdp nativeunwind.StackDeltaProvider,
-	frameCacheSize uint32, filterErrorFrames bool, includeEnvVars libpf.Set[string]) (*ProcessManager, error) {
+	kernelSymbolizer *kallsyms.Symbolizer, frameCacheSize uint32, filterErrorFrames bool,
+	includeEnvVars libpf.Set[string],
+) (*ProcessManager, error) {
 	if exeReporter == nil {
 		exeReporter = executableReporterStub{}
 	}
@@ -76,7 +79,7 @@ func New(ctx context.Context, interpretersConfig interpreterconfig.Config, monit
 	}
 	elfInfoCache.SetLifetime(elfInfoCacheTTL)
 
-	frameCache, err := lru.New[frameCacheKey, libpf.Frames](frameCacheSize, hashFrameCacheKey)
+	frameCache, err := lru.New[frameCacheKey, frameCacheValue](frameCacheSize, hashFrameCacheKey)
 	if err != nil {
 		return nil, fmt.Errorf("unable to create frameCache: %v", err)
 	}
@@ -94,6 +97,10 @@ func New(ctx context.Context, interpretersConfig interpreterconfig.Config, monit
 	})
 
 	interpreters := make(map[libpf.PID]map[util.OnDiskFileIdentifier]interpreter.Instance)
+	var ks kernelSymbols
+	if kernelSymbolizer != nil {
+		ks = kallsymsKernelSymbols{symbolizer: kernelSymbolizer}
+	}
 
 	selfContainerID, selfCgroupIno, err := process.DetectSelfContainerIDViaInode()
 	if err != nil {
@@ -109,6 +116,7 @@ func New(ctx context.Context, interpretersConfig interpreterconfig.Config, monit
 		ebpf:                     ebpf,
 		elfInfoCache:             elfInfoCache,
 		frameCache:               frameCache,
+		kernelSymbols:            ks,
 		traceReporter:            traceReporter,
 		exeReporter:              exeReporter,
 		metricsAddSlice:          metrics.AddSlice,
@@ -215,6 +223,37 @@ func (pm *ProcessManager) symbolizeFrame(pid libpf.PID, data []uint64, frames *l
 
 	return fmt.Errorf("no matching interpreter instance (of len %d): %w",
 		len(pm.interpreters[pid]), errSymbolizationNotSupported)
+}
+
+func (pm *ProcessManager) appendKernelFrames(addrs []uint64, dst *libpf.Frames) (uint64, uint64) {
+	var cacheHit, cacheMiss uint64
+
+	snapshot := pm.kernelSymbols.Snapshot()
+	for _, addr := range addrs {
+		address := libpf.Address(addr)
+		key := kernelFrameCacheKey(address)
+		if cached, ok := pm.frameCache.Get(key); ok &&
+			snapshot.IsGenerationValid(cached.kernelGeneration) {
+			cacheHit++
+			*dst = append(*dst, cached.frames...)
+			continue
+		}
+
+		resolution, resolved := snapshot.ResolveAddress(address)
+		frame := symbolizeKernelFrame(address, resolution)
+		if resolved && (resolution.Source == kallsyms.SymbolSourceBPF ||
+			frame.Value().Mapping.Valid()) {
+			cacheMiss++
+			pm.frameCache.Add(key, frameCacheValue{
+				frames:           libpf.Frames{frame},
+				kernelGeneration: resolution.Generation,
+			})
+		}
+
+		*dst = append(*dst, frame)
+	}
+
+	return cacheHit, cacheMiss
 }
 
 // convertFrame converts one host Frame to one or more libpf.Frames. It returns true
@@ -337,17 +376,27 @@ func (pm *ProcessManager) HandleTrace(bpfTrace *libpf.EbpfTrace) {
 	}
 
 	pid := bpfTrace.PID
-	kernelFramesLen := len(bpfTrace.KernelFrames)
 	trace := &libpf.Trace{
-		Frames:       make(libpf.Frames, kernelFramesLen, kernelFramesLen+int(bpfTrace.NumFrames)),
+		Frames:       make(libpf.Frames, 0, int(bpfTrace.NumKernelFrames)+int(bpfTrace.NumFrames)),
 		CustomLabels: bpfTrace.CustomLabels,
 	}
-	copy(trace.Frames, bpfTrace.KernelFrames)
 
 	cacheMiss := uint64(0)
 	cacheHit := uint64(0)
 
-	for frames := libpf.EbpfFrame(bpfTrace.FrameData); len(frames) > 0; frames = frames[frames.Length():] {
+	numKernelFrames := int(bpfTrace.NumKernelFrames)
+	if numKernelFrames > len(bpfTrace.FrameData) {
+		log.Errorf("Kernel frame count %d exceeds frame data length %d", numKernelFrames, len(bpfTrace.FrameData))
+		numKernelFrames = len(bpfTrace.FrameData)
+	}
+	if numKernelFrames > 0 {
+		hits, misses := pm.appendKernelFrames(bpfTrace.FrameData[:numKernelFrames], &trace.Frames)
+		cacheHit += hits
+		cacheMiss += misses
+	}
+
+	userFrameData := bpfTrace.FrameData[numKernelFrames:]
+	for frames := libpf.EbpfFrame(userFrameData); len(frames) > 0; frames = frames[frames.Length():] {
 		frame := frames[:frames.Length()]
 		if frame.Flags().Error() {
 			if !pm.filterErrorFrames {
@@ -368,12 +417,14 @@ func (pm *ProcessManager) HandleTrace(bpfTrace *libpf.EbpfTrace) {
 		if cached, ok := pm.frameCache.Get(key); ok {
 			// Fast path
 			cacheHit++
-			trace.Frames = append(trace.Frames, cached...)
+			trace.Frames = append(trace.Frames, cached.frames...)
 		} else {
 			// Slow path: convert trace.
 			if pm.convertFrame(pid, frame, &trace.Frames) {
 				cacheMiss++
-				pm.frameCache.Add(key, slices.Clone(trace.Frames[oldLen:len(trace.Frames)]))
+				pm.frameCache.Add(key, frameCacheValue{
+					frames: slices.Clone(trace.Frames[oldLen:len(trace.Frames)]),
+				})
 			}
 		}
 	}
