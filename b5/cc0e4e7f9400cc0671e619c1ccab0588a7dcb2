@@ -1,0 +1,27 @@
+metrics/ids.go
+  s_58c0fc0879fc1e::t_8d1cf321f13b54 689-691,693
+metrics/metrics.json
+  s_58c0fc0879fc1e::t_ae8d90a65f4403 2191-2197
+support/ebpf/types.h
+  s_58c0fc0879fc1e::t_275118f0f3458c 349-351
+support/types.go
+  s_58c0fc0879fc1e::t_02d6ac6bffa5ba 65,508
+support/types_def.go
+  s_58c0fc0879fc1e::t_62132c00efa949 317
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b5cc0e4e7f9400cc0671e619c1ccab0588a7dcb2",
+  "prompts": {},
+  "sessions": {
+    "s_58c0fc0879fc1e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6e6e-ee34-77a3-897c-251e655ea4f8",
+        "model": "unknown"
+      },
+      "human_author": "Ivan Babrou <github@ivan.computer>"
+    }
+  }
+}
